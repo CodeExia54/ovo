@@ -164,19 +164,6 @@ static inline int my_set_pte_at(struct mm_struct *mm,
                                 uintptr_t addr,
                                 pte_t *ptep, pte_t pte)
 {
-    typedef void (*f__sync_icache_dcache)(pte_t pteval);
-    typedef void (*f_mte_sync_tags)(pte_t pte, unsigned int nr_pages);
-
-    static f__sync_icache_dcache __sync_icache_dcache = NULL;
-    static f_mte_sync_tags mte_sync_tags = NULL;
-    static bool symbols_checked = false;
-
-    if (!symbols_checked) {
-        __sync_icache_dcache = (f__sync_icache_dcache) ovo_kallsyms_lookup_name("__sync_icache_dcache");
-        mte_sync_tags = (f_mte_sync_tags) ovo_kallsyms_lookup_name("mte_sync_tags");
-        symbols_checked = true;
-    }
-
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
     __check_safe_pte_update(mm, ptep, pte);
     __set_pte(ptep, pte);
@@ -185,38 +172,16 @@ static inline int my_set_pte_at(struct mm_struct *mm,
     set_pte(ptep, pte);
 #endif
 
-#if !defined(PTE_UXN)
-#define PTE_UXN         (_AT(pteval_t, 1) << 54)  /* User XN */
-#endif
-
-#if !defined(pte_user_exec)
-#define pte_user_exec(pte)    (!(pte_val(pte) & PTE_UXN))
-#endif
-
-    if (__sync_icache_dcache && pte_present(pte) && pte_user_exec(pte) && !pte_special(pte)) {
-        __sync_icache_dcache(pte);
-    } else if (pte_present(pte) && (pte_val(pte) & PTE_EXEC)) {
-        // fallback flush if __sync_icache_dcache symbol not found and PTE_EXEC set
+    if (pte_present(pte) && (pte_val(pte) & PTE_EXEC)) {
         flush_icache_range(addr, addr + PAGE_SIZE);
     }
 
-#if !defined(pte_tagged)
-#define pte_tagged(pte)      ((pte_val(pte) & PTE_ATTRINDX_MASK) == \
-    PTE_ATTRINDX(MT_NORMAL_TAGGED))
-#endif
-
-    if (system_supports_mte() && pte_access_permitted(pte, false) &&
-        !pte_special(pte) && pte_tagged(pte)) {
-        if (mte_sync_tags) {
-            mte_sync_tags(pte, 1);
-        } else {
-            // mte_sync_tags symbol not found, kernel will handle
-        }
-    }
+    // No manual mte_sync_tags call; kernel handles MTE internally
 
     return 0;
 }
 #endif
+
 
 
 
