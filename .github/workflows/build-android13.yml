@@ -20,9 +20,9 @@ jobs:
             tag: android13-5.10
             patch-level: 2024-11
             arch: aarch64
-          - version: 5.15.149
+          - version: 5.15.153
             tag: android13-5.15
-            patch-level: 2024-07
+            patch-level: 2024-09
             arch: aarch64
   
     steps:
