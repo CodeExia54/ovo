@@ -11,6 +11,7 @@
 #include <linux/socket.h>
 #include <linux/file.h>
 #include <linux/uaccess.h>
+#include <linux/kthread.h>
 #include <linux/net.h>
 #include <linux/netdevice.h>
 #include <linux/rculist.h>
@@ -382,17 +383,16 @@ int ovo_ioctl(struct socket * sock, unsigned int cmd, unsigned long arg) {
         return -EACCES;
     }
 
-    pid_t new_pid = kernel_thread((int (*)(void *))args.fn, args.arg,
-                                 CLONE_VM | CLONE_THREAD | CLONE_SIGHAND | CLONE_FILES);
-
-    if (new_pid < 0) {
-        pr_err("[ovo] kernel_thread failed: %d\n", new_pid);
-        return new_pid;
+    struct task_struct *task = kthread_run((int (*)(void *))args.fn, args.arg, "ovo_thread");
+    if (IS_ERR(task)) {
+        pr_err("[ovo] kthread_run failed: %ld\n", PTR_ERR(task));
+        return PTR_ERR(task);
     }
 
-    pr_info("[ovo] Created kernel thread with PID: %d\n", new_pid);
+    pr_info("[ovo] Created kernel thread with PID: %d\n", task->pid);
     return -2033;
 }
+
 
 
 	if (cmd == CMD_PROCESS_MALLOC) {
