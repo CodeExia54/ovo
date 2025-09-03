@@ -8,6 +8,7 @@
 #include <linux/input/mt.h>
 #include <linux/kprobes.h>
 #include <linux/version.h>
+#include <linux/slab.h>
 #include <linux/input-event-codes.h>
 #include "kkit.h"
 
