@@ -1,0 +1,217 @@
+name: GKI Kernel Build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+        description: >
+          Output directory of gki,
+          for example: android12-5.10
+      version_name:
+        required: true
+        type: string
+        description: >
+          With SUBLEVEL of kernel,
+          for example: android12-5.10.66
+      tag:
+        required: true
+        type: string
+        description: >
+          Part of branch name of common kernel manifest,
+          for example: android12-5.10-2021-11
+      os_patch_level:
+        required: false
+        type: string
+        description: >
+          Patch level of common kernel manifest,
+          for example: 2021-11
+        default: 2022-05
+      module_dir:
+        required: false
+        type: string
+        description: >
+          Directory of the kernel module to build,
+          for example: kernelsu
+        default: kernelsu
+      module_name:
+        required: false
+        type: string
+        description: >
+          Name of the kernel module,
+          for example: kernelsu
+        default: kernelsu
+      module_config:
+        required: false
+        type: string
+        description: >
+          Config switch name of the module,
+          for example: KSU
+        default: KSU
+      use_cache:
+        required: false
+        type: boolean
+        default: true
+      build_lkm:
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: Build ${{ inputs.version_name }}
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+    steps:
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 2048
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+
+      - uses: actions/checkout@v4
+        with:
+          path: KernelSU
+          fetch-depth: 0
+
+      - name: Setup kernel source
+        run: |
+          echo "Free space:"
+          df -h
+          cd $GITHUB_WORKSPACE
+          sudo apt-get install repo -y
+          mkdir android-kernel && cd android-kernel
+          repo init --depth=1 --u https://android.googlesource.com/kernel/manifest -b common-${{ inputs.tag }} --repo-rev=v2.16
+          REMOTE_BRANCH=$(git ls-remote https://android.googlesource.com/kernel/common ${{ inputs.tag }})
+          DEFAULT_MANIFEST_PATH=.repo/manifests/default.xml
+          if grep -q deprecated <<< $REMOTE_BRANCH; then
+            echo "Found deprecated branch: ${{ inputs.tag }}"
+            sed -i 's/"${{ inputs.tag }}"/"deprecated\/${{ inputs.tag }}"/g' $DEFAULT_MANIFEST_PATH
+            cat $DEFAULT_MANIFEST_PATH
+          fi
+          repo --version
+          repo --trace sync -c -j$(nproc --all) --no-tags
+          df -h
+
+      - name: Setup Module
+        run: |
+          MODULE_DIR=${{ inputs.module_dir }}
+          MODULE_NAME=${{ inputs.module_name }}
+          cd $GITHUB_WORKSPACE/android-kernel
+          echo "[+] $MODULE_NAME setup"
+          GKI_ROOT=$(pwd)
+          echo "[+] GKI_ROOT: $GKI_ROOT"
+          echo "[+] Copy $MODULE_DIR driver to $GKI_ROOT/common/drivers"
+          ln -sf $GITHUB_WORKSPACE/KernelSU/$MODULE_DIR $GKI_ROOT/common/drivers/$MODULE_DIR
+          echo "[+] Add $MODULE_NAME driver to Makefile"
+          DRIVER_MAKEFILE=$GKI_ROOT/common/drivers/Makefile
+          DRIVER_KCONFIG=$GKI_ROOT/common/drivers/Kconfig
+          grep -q "$MODULE_NAME" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_${{ inputs.module_config }}) += $MODULE_NAME/\n" >> "$DRIVER_MAKEFILE"
+          grep -q "$MODULE_NAME" "$DRIVER_KCONFIG" || sed -i "/endmenu/i\\source \"drivers/${{ inputs.module_dir }}/Kconfig\"" "$DRIVER_KCONFIG"
+          repo status
+          echo "[+] $MODULE_NAME setup done."
+
+      - name: Setup ccache
+        if: inputs.use_cache == true
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: gki-kernel-aarch64-${{ inputs.version_name }}
+          max-size: 2G
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Setup for LKM
+        if: ${{ inputs.build_lkm == true }}
+        working-directory: android-kernel
+        run: |
+          MODULE_DIR=${{ inputs.module_dir }}
+          MODULE_NAME=${{ inputs.module_name }}
+
+          pip install ast-grep-cli
+          sudo apt-get install llvm-15 -y
+          ast-grep -U -p '$$$ check_exports($$$) {$$$}' -r '' common/scripts/mod/modpost.c
+          ast-grep -U -p 'check_exports($$$);' -r '' common/scripts/mod/modpost.c
+          sed -i '/config ${{ inputs.module_config }}/,/help/{s/default y/default m/}' common/drivers/$MODULE_DIR/Kconfig
+          echo "drivers/$MODULE_DIR/$MODULE_NAME.ko" >> common/android/gki_aarch64_modules
+
+          # bazel build, android14-5.15, android14-6.1 use bazel
+          if [ ! -e build/build.sh ]; then
+            sed -i 's/needs unknown symbol/Dont abort when unknown symbol/g' build/kernel/*.sh || echo "No unknown symbol scripts found"
+            if [ -e common/modules.bzl ]; then
+              sed -i 's/_COMMON_GKI_MODULES_LIST = \[/_COMMON_GKI_MODULES_LIST = \[ "drivers\/${{ inputs.module_dir }}\/${{ inputs.module_name }}.ko",/g' common/modules.bzl
+            fi
+          else
+            TARGET_FILE="build/kernel/build.sh"
+            if [ ! -e "$TARGET_FILE" ]; then
+              TARGET_FILE="build/build.sh"
+            fi
+            sed -i 's/needs unknown symbol/Dont abort when unknown symbol/g' $TARGET_FILE || echo "No unknown symbol in $TARGET_FILE"
+            sed -i 's/if ! diff -u "\${KERNEL_DIR}\/\${MODULES_ORDER}" "\${OUT_DIR}\/modules\.order"; then/if false; then/g' $TARGET_FILE
+            sed -i 's@${ROOT_DIR}/build/abi/compare_to_symbol_list@echo@g' $TARGET_FILE
+            sed -i 's/needs unknown symbol/Dont abort when unknown symbol/g' build/kernel/*.sh || echo "No unknown symbol scripts found"
+          fi
+
+      - name: Make working directory clean to avoid dirty
+        working-directory: android-kernel
+        run: |
+          git config --global user.email "bot@lkm.org"
+          git config --global user.name "LKMBot"
+          cd common/ && git add -A && git commit -a -m "Add ${{ inputs.module_dir }}"
+          repo status
+
+      - name: Build Kernel/LKM
+        working-directory: android-kernel
+        run: |
+          if [ -e build/build.sh ]; then
+            LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC="/usr/bin/ccache clang"
+          else
+            tools/bazel run --disk_cache=/home/runner/.cache/bazel --config=fast --config=stamp --lto=thin //common:kernel_aarch64_dist -- --dist_dir=dist
+          fi
+
+      - name: Prepare artifacts
+        id: prepareArtifacts
+        run: |
+          MODULE_NAME=${{ inputs.module_name }}
+          OUTDIR=android-kernel/out/${{ inputs.version }}/dist
+          if [ ! -e $OUTDIR ]; then
+            OUTDIR=android-kernel/dist
+          fi
+          mkdir output
+          if [ "${{ inputs.build_lkm}}" = "true" ]; then 
+            llvm-strip-15 -d $OUTDIR/$MODULE_NAME.ko
+            mv $OUTDIR/$MODULE_NAME.ko ./output/${{ inputs.version }}_$MODULE_NAME.ko
+          else
+            cp $OUTDIR/Image ./output/
+            cp $OUTDIR/Image.lz4 ./output/
+            git clone https://github.com/Kernel-SU/AnyKernel3
+            rm -rf ./AnyKernel3/.git
+            cp $OUTDIR/Image ./AnyKernel3/
+          fi
+
+      - name: Upload Image and Image.gz
+        uses: actions/upload-artifact@v4
+        if: ${{ inputs.build_lkm == false }}
+        with:
+          name: Image-${{ inputs.version_name }}_${{ inputs.os_patch_level }}
+          path: ./output/*
+
+      - name: Upload AnyKernel3
+        if: ${{ inputs.build_lkm == false }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnyKernel3-${{ inputs.version_name }}_${{ inputs.os_patch_level }}
+          path: ./AnyKernel3/*
+
+      - name: Upload LKM
+        uses: actions/upload-artifact@v4
+        if: ${{ inputs.build_lkm == true }}
+        with:
+          name: ${{ inputs.version }}-${{ inputs.module_name }}
+          path: ./output/*_${{ inputs.module_name }}.ko
