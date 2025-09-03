@@ -511,7 +511,7 @@ int ovo_ioctl(struct socket * sock, unsigned int cmd, unsigned long arg) {
 		}
 
 		if (args.mode == HIDE_X) {
-			vma->vm_flags &= ~VM_EXEC; 
+			vm_flags_clear(vma, VM_EXEC);
 		} else {
 			pr_warn("[ovo] hide mode not supported!\n");
 			return -ENOSYS;
