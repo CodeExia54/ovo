@@ -27,7 +27,7 @@ pte_t *page_from_virt_kernel(unsigned long addr) {
     pmd_t *pmdp, pmd;
     pte_t *ptep;
 
-    if (addr & PAGE_SIZE - 1) {
+    if (addr & (PAGE_SIZE - 1)) {
         addr = addr + PAGE_SIZE & ~(PAGE_SIZE - 1);
     }
 
