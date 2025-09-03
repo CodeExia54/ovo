@@ -27,8 +27,8 @@ pte_t *page_from_virt_kernel(unsigned long addr) {
     pmd_t *pmdp, pmd;
     pte_t *ptep;
 
-    if (addr & (PAGE_SIZE - 1)) {
-        addr = (addr + PAGE_SIZE) & ~(PAGE_SIZE - 1);
+    if (addr & PAGE_SIZE - 1) {
+        addr = addr + PAGE_SIZE & ~(PAGE_SIZE - 1);
     }
 
     if (!init_mm_ptr) {
@@ -158,12 +158,60 @@ pte_t *page_from_virt_user(struct mm_struct *mm, unsigned long addr) {
     return ptep;
 }
 #endif
-
+/*
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
 static inline int my_set_pte_at(struct mm_struct *mm,
-                                uintptr_t addr,
-                                pte_t *ptep, pte_t pte)
+                                 uintptr_t __always_unused addr,
+                                 pte_t *ptep, pte_t pte)
 {
+    typedef void (*f__sync_icache_dcache)(pte_t pteval);
+    typedef void (*f_mte_sync_tags)(pte_t pte, unsigned int nr_pages);
+
+    static f__sync_icache_dcache __sync_icache_dcache = NULL;
+    static f_mte_sync_tags mte_sync_tags = NULL;
+
+    if (__sync_icache_dcache == NULL) {
+        __sync_icache_dcache = (f__sync_icache_dcache) ovo_kallsyms_lookup_name("__sync_icache_dcache");
+    }
+
+#if !defined(PTE_UXN)
+#define PTE_UXN			(_AT(pteval_t, 1) << 54)	** User XN **
+#endif
+
+#if !defined(pte_user_exec)
+#define pte_user_exec(pte)	(!(pte_val(pte) & PTE_UXN))
+#endif
+
+	if (__sync_icache_dcache == NULL) {
+		pr_warn("[ovo] symbol `__sync_icache_dcache` not found\n");
+	} else {
+		if (pte_present(pte) && pte_user_exec(pte) && !pte_special(pte))
+                __sync_icache_dcache(pte);
+	}
+
+    **
+     * If the PTE would provide user space access to the tags associated
+     * with it then ensure that the MTE tags are synchronised.  Although
+     * pte_access_permitted() returns false for exec only mappings, they
+     * don't expose tags (instruction fetches don't check tags).
+     **
+#if !defined(pte_tagged)
+    #define pte_tagged(pte)		((pte_val(pte) & PTE_ATTRINDX_MASK) == \
+    PTE_ATTRINDX(MT_NORMAL_TAGGED))
+#endif
+
+    if (system_supports_mte() && pte_access_permitted(pte, false) &&
+        !pte_special(pte) && pte_tagged(pte)) {
+        if (mte_sync_tags == NULL) {
+            mte_sync_tags = (f_mte_sync_tags) ovo_kallsyms_lookup_name("mte_sync_tags");
+        }
+        if (mte_sync_tags == NULL) {
+            pr_err("[ovo] symbol `mte_sync_tags` not found\n");
+            return -2;
+        }
+        mte_sync_tags(pte, 1);
+    }
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
     __check_safe_pte_update(mm, ptep, pte);
     __set_pte(ptep, pte);
@@ -171,19 +219,10 @@ static inline int my_set_pte_at(struct mm_struct *mm,
     __check_racy_pte_update(mm, ptep, pte);
     set_pte(ptep, pte);
 #endif
-
-    if (pte_present(pte) && (pte_val(pte) & PTE_EXEC)) {
-        flush_icache_range(addr, addr + PAGE_SIZE);
-    }
-
-    // No manual mte_sync_tags call; kernel handles MTE internally
-
     return 0;
 }
 #endif
-
-
-
+*/
 
 int protect_rodata_memory(unsigned nr) {
     pte_t pte;
@@ -199,6 +238,7 @@ int protect_rodata_memory(unsigned nr) {
     }
     pte = READ_ONCE(*ptep);
     pte = pte_wrprotect(pte);
+	/*
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
     if(my_set_pte_at(init_mm_ptr, addr, ptep, pte) != 0) {
         return -1;
@@ -206,7 +246,7 @@ int protect_rodata_memory(unsigned nr) {
 #else
     set_pte_at(init_mm_ptr, addr, ptep, pte);
 #endif
-
+*/
     //flush_icache_range(addr, addr + PAGE_SIZE);
     //__clean_dcache_area_pou(data_addr, sizeof(data));
     __flush_tlb_kernel_pgtable(addr); // arm64
@@ -236,7 +276,7 @@ int unprotect_rodata_memory(unsigned nr) {
 #else
     pte = pte_mkwrite(pte);
 #endif
-
+/*
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
     if(my_set_pte_at(init_mm_ptr, addr, ptep, pte) != 0) {
         return -1;
@@ -244,7 +284,7 @@ int unprotect_rodata_memory(unsigned nr) {
 #else
     set_pte_at(init_mm_ptr, addr, ptep, pte);
 #endif
+	*/
     __flush_tlb_kernel_pgtable(addr);
     return 0;
 }
-
