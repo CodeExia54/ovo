@@ -31,7 +31,8 @@ static int ovo_release(struct socket *sock) {
 
 	struct ovo_sock *os = (struct ovo_sock *) ((char *) sock->sk + sizeof(struct sock));
 
-	for (int i = 0; i < os->cached_count; i++) {
+	int i;
+    for (i = 0; i < os->cached_count; i++) {
 		if (os->cached_kernel_pages[i]) {
 			free_page(os->cached_kernel_pages[i]);
 		}
