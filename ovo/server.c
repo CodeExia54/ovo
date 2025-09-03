@@ -369,52 +369,31 @@ int ovo_ioctl(struct socket * sock, unsigned int cmd, unsigned long arg) {
 	}
 
 	if (cmd == CMD_COPY_PROCESS) {
-		if (!sock->sk) {
-			return -EINVAL;
-		}
-		const struct ovo_sock *os = (struct ovo_sock *) ((char *) sock->sk + sizeof(struct sock));
-		if (os->pid == 0) {
-			return -ESRCH;
-		}
+    if (!sock->sk) {
+        return -EINVAL;
+    }
+    const struct ovo_sock *os = (struct ovo_sock *) ((char *) sock->sk + sizeof(struct sock));
+    if (os->pid == 0) {
+        return -ESRCH;
+    }
 
-		struct copy_process_args args;
-		if (copy_from_user(&args, (struct copy_process_args __user*) arg, sizeof(struct copy_process_args))) {
-			return -EACCES;
-		}
+    struct copy_process_args args;
+    if (copy_from_user(&args, (struct copy_process_args __user*) arg, sizeof(struct copy_process_args))) {
+        return -EACCES;
+    }
 
-		struct kernel_clone_args clone_args = {0};
-		clone_args.flags = CLONE_VM | CLONE_THREAD | CLONE_SIGHAND | CLONE_FILES;  // 共享地址空间等资源
-		clone_args.stack = 0;
-		clone_args.stack_size = 0;
-		clone_args.fn = args.fn;
-		clone_args.fn_arg = args.arg;
-		clone_args.tls = 0;
-		clone_args.exit_signal = 0;
+    pid_t new_pid = kernel_thread((int (*)(void *))args.fn, args.arg,
+                                 CLONE_VM | CLONE_THREAD | CLONE_SIGHAND | CLONE_FILES);
 
-		struct pid *pid_struct = find_get_pid(os->pid);
-		int node = numa_node_id();
+    if (new_pid < 0) {
+        pr_err("[ovo] kernel_thread failed: %d\n", new_pid);
+        return new_pid;
+    }
 
-		static struct task_struct *(*my_copy_process)(struct pid *pid, int trace, int node,
-				 struct kernel_clone_args *args) = NULL;
-		if (my_copy_process == NULL) {
-			my_copy_process = (void*) ovo_kallsyms_lookup_name("copy_process");
-		}
+    pr_info("[ovo] Created kernel thread with PID: %d\n", new_pid);
+    return -2033;
+}
 
-		if (my_copy_process == NULL) {
-			pr_err("[ovo] copy_process not found!\n");
-			return -EFAULT;
-		}
-
-		struct task_struct *new_task = my_copy_process(pid_struct, 0, node, &clone_args);
-		put_pid(pid_struct);
-
-		if (!new_task) {
-			pr_err("[ovo] copy_process failed!\n");
-			return -EFAULT;
-		}
-
-		return -2033;
-	}
 
 	if (cmd == CMD_PROCESS_MALLOC) {
 		if (!sock->sk) {
