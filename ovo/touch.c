@@ -222,32 +222,41 @@ static void handle_cache_events(struct input_dev* dev) {
     spin_unlock_irqrestore(&pool->event_lock, flags2);
 }
 
-static int input_handle_event_handler_pre(struct kprobe *p,
-                                          struct pt_regs *regs)
+static int input_handle_event_handler_pre(struct kprobe *p, struct pt_regs *regs)
 {
     unsigned int type = (unsigned int)regs->regs[1];
     struct input_dev* dev = (struct input_dev*)regs->regs[0];
-    if (!dev || type != EV_SYN)
+
+    if (!dev)
         return 0;
+
+    pr_info("[ovo_kprobe] input_event fired: type=%u device=%s\n", type, dev->name);
+
+    if (type != EV_SYN)  // Optional filter to reduce noise
+        return 0;
+
     handle_cache_events(dev);
     return 0;
 }
 
-static struct kprobe input_event_kp = {
-    .symbol_name = "input_event",
-    .pre_handler = input_handle_event_handler_pre,
-};
-
-static int input_handle_event_handler2_pre(struct kprobe *p,
-                                           struct pt_regs *regs)
+static int input_handle_event_handler2_pre(struct kprobe *p, struct pt_regs *regs)
 {
     unsigned int type = (unsigned int)regs->regs[1];
     struct input_handle* handle = (struct input_handle*)regs->regs[0];
-    if (!handle || type != EV_SYN)
+
+    if (!handle)
         return 0;
+
+    pr_info("[ovo_kprobe] input_inject_event fired: type=%u handle=%p device=%s\n",
+            type, handle, handle->dev ? handle->dev->name : "NULL");
+
+    if (type != EV_SYN)
+        return 0;
+
     handle_cache_events(handle->dev);
     return 0;
 }
+
 
 static struct kprobe input_inject_event_kp = {
     .symbol_name = "input_inject_event",
