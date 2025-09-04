@@ -191,7 +191,7 @@ static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
 }
 
 pid_t find_process_by_name(const char *name) {
-    struct task_struct *task;
+/*    struct task_struct *task;
     struct task_struct *found_task = NULL;
     char cmdline[256];
     size_t name_len;
@@ -249,7 +249,8 @@ pid_t find_process_by_name(const char *name) {
     pr_info("[ovo] find_process_by_name: found pid %d for pkg '%s'\n", pid, name);
     put_task_struct(found_task);
 
-    return pid;
+    return pid; */
+   return 0;
 
 }
 
