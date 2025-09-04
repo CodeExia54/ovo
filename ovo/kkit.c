@@ -152,7 +152,7 @@ int is_pid_alive(pid_t pid) {
     return false;
 }
 
-static int (*my_get_cmdline)(struct task_struct *task, char *buffer, int buflen) = NULL;
+//static int (*my_get_cmdline)(struct task_struct *task, char *buffer, int buflen) = NULL;
 
 static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
 /*
