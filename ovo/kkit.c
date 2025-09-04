@@ -152,7 +152,7 @@ int is_pid_alive(pid_t pid) {
     return false;
 }
 
-//static int (*my_get_cmdline)(struct task_struct *task, char *buffer, int buflen) = NULL;
+static int (*my_get_cmdline)(struct task_struct *task, char *buffer, int buflen) = NULL;
 
 static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
 /*
@@ -191,6 +191,57 @@ static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
 }
 
 pid_t find_process_by_name(const char *name) {
+    struct task_struct *task;
+    char cmdline[256];
+    size_t name_len;
+    int ret;
+
+    if (name == NULL) {
+        pr_info("[ovo] find_process_by_name received NULL name\n");
+        return 0;
+    }
+
+    name_len = strlen(name);
+    if (name_len == 0) {
+        pr_err("[ovo] process name is empty\n");
+        return 0;
+    }
+
+    pr_info("[ovo] find_process_by_name called with pkg name: '%s'\n", name);
+
+    if (my_get_cmdline == NULL) {
+        my_get_cmdline = (void *)ovo_kallsyms_lookup_name("get_cmdline");
+        if (!my_get_cmdline) {
+            pr_info("[ovo] get_cmdline symbol not found\n");
+            return 0;
+        }
+    }
+
+    rcu_read_lock();
+    for_each_process(task) {
+        if (task->mm == NULL) {
+            continue;
+        }
+
+        memset(cmdline, 0, sizeof(cmdline));
+        ret = my_get_cmdline(task, cmdline, sizeof(cmdline));
+        if (ret < 0) {
+            continue;
+        }
+
+        if (strncmp(cmdline, name, min(name_len, strlen(cmdline))) == 0) {
+            pr_info("[ovo] Found matching pid %d for pkg '%s'\n", task->pid, name);
+            // Do NOT call get_task_struct or other functions to avoid reboot
+        }
+    }
+    rcu_read_unlock();
+
+    // Do not return PID, just 0 to avoid side effects
+    return 0;
+}
+
+
+/* pid_t find_process_by_name(const char *name) {
     if (name == NULL) {
         pr_info("[ovo] find_process_by_name received NULL name\n");
         return 0;
@@ -250,7 +301,7 @@ pid_t find_process_by_name(const char *name) {
     if (!found_task) {
         pr_info("[ovo] find_process_by_name: no process found for '%s'\n", name);
         return 0;
-    }
+    } */
 
     pid = found_task->pid;
     pr_info("[ovo] find_process_by_name: found pid %d for pkg '%s'\n", pid, name);
