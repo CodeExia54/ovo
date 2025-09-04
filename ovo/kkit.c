@@ -191,7 +191,6 @@ static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
 }
 
 pid_t find_process_by_name(const char *name) {
-/*
     struct task_struct *task;
     struct task_struct *found_task = NULL;
     char cmdline[256];
@@ -251,8 +250,7 @@ pid_t find_process_by_name(const char *name) {
     put_task_struct(found_task);
 
     return pid;
-*/
-    return 0;
+
 }
 
 #if INJECT_SYSCALLS == 1
