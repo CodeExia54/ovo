@@ -203,6 +203,7 @@ static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
 pid_t find_process_by_name(const char *name) {
     struct task_struct *task;
     struct task_struct *found_task = NULL;
+    pid_t pid;  // Move declaration here
     char cmdline[256];
     size_t name_len;
     int ret;
@@ -215,7 +216,6 @@ pid_t find_process_by_name(const char *name) {
 
     if (my_get_cmdline == NULL) {
         my_get_cmdline = (void *) ovo_kallsyms_lookup_name("get_cmdline");
-        // It can be NULL, because there is a fix below if get_cmdline is NULL
     }
 
     rcu_read_lock();
@@ -232,16 +232,15 @@ pid_t find_process_by_name(const char *name) {
         }
 
         if (ret < 0) {
-            // Fallback to task->comm
             pr_warn("[ovo] Failed to get cmdline for pid %d\n", task->pid);
             if (strncmp(task->comm, name, min(strlen(task->comm), name_len)) == 0) {
-                get_task_struct(task);      // Pin the task before break
+                get_task_struct(task);
                 found_task = task;
                 break;
             }
         } else {
             if (strncmp(cmdline, name, min(name_len, strlen(cmdline))) == 0) {
-                get_task_struct(task);      // Pin the task before break
+                get_task_struct(task);
                 found_task = task;
                 break;
             }
