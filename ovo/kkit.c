@@ -98,8 +98,7 @@ int mark_pid_root(pid_t pid)
     struct pid *pid_struct;
     struct task_struct *task;
     struct cred *new_cred;
-    pid_t unused; /* placeholder if you need a return-variable */
-    
+
     /* 1. Lookup and pin the task_struct under RCU */
     pid_struct = find_get_pid(pid);
     if (!pid_struct) {
@@ -203,10 +202,10 @@ static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
 pid_t find_process_by_name(const char *name) {
     struct task_struct *task;
     struct task_struct *found_task = NULL;
-    pid_t pid;  // Move declaration here
     char cmdline[256];
     size_t name_len;
     int ret;
+    pid_t pid;
 
     name_len = strlen(name);
     if (name_len == 0) {
@@ -252,8 +251,8 @@ pid_t find_process_by_name(const char *name) {
         return 0;
     }
 
-    pid_t pid = found_task->pid;
-    put_task_struct(found_task);    // Release the refcount
+    pid = found_task->pid;
+    put_task_struct(found_task);
     return pid;
 }
 
