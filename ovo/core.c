@@ -38,7 +38,7 @@
 static int __init ovo_init(void) {
     int ret;
 
-    cuteBabyPleaseDontCry();
+    //cuteBabyPleaseDontCry();
     ret = 0;
 
     ret = init_server();
