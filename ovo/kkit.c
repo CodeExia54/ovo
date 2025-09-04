@@ -206,14 +206,14 @@ pid_t find_process_by_name(const char *name) {
         my_get_cmdline = (void *) ovo_kallsyms_lookup_name("get_cmdline");
   // It can be NULL, because there is a fix below if get_cmdline is NULL
     }
-/*
+
  // code from https://github.com/torvalds/linux/blob/master/kernel/sched/debug.c#L797
     rcu_read_lock();
     for_each_process(task) {
         if (task->mm == NULL) {
             continue;
         }
-
+/*
         cmdline[0] = '\0';
         if (my_get_cmdline != NULL) {
             ret = my_get_cmdline(task, cmdline, sizeof(cmdline));
@@ -234,10 +234,10 @@ pid_t find_process_by_name(const char *name) {
                 return task->pid;
             }
         }
+        */
     }
 
-    rcu_read_unlock();
-    */
+    rcu_read_unlock();      
     return 0;
 }
 
