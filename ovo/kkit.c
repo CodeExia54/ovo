@@ -53,6 +53,12 @@ bool is_file_exist(const char *filename) {
         return false;
     }
 
+//    // int kern_path(const char *name, unsigned int flags, struct path *path)
+//    struct path path;
+//    if (kern_path(filename, LOOKUP_FOLLOW, &path) == 0) {
+//        return true;
+//    }
+
     return false;
 }
 
@@ -70,6 +76,8 @@ unsigned long ovo_kallsyms_lookup_name(const char *symbol_name) {
             return 0;
         }
 
+        // 高版本一些地址符号不再导出，需要通过kallsyms_lookup_name获取
+        // 但是kallsyms_lookup_name也是一个不导出的内核符号，需要通过kprobe获取
         lookup_name = (kallsyms_lookup_name_t) kp.addr;
         unregister_kprobe(&kp);
     }
@@ -85,77 +93,70 @@ unsigned long *ovo_find_syscall_table(void) {
     return syscall_table;
 }
 
-int mark_pid_root(pid_t pid)
-{
-/*
-    struct pid *pid_struct;
+int mark_pid_root(pid_t pid) {
+    static struct cred* (*my_prepare_creds)(void) = NULL;
+
+    struct pid * pid_struct;
     struct task_struct *task;
+    kuid_t kuid;
+    kgid_t kgid;
     struct cred *new_cred;
 
+    kuid = KUIDT_INIT(0);
+    kgid = KGIDT_INIT(0);
+
     pid_struct = find_get_pid(pid);
-    if (!pid_struct) {
-        printk(KERN_ERR "[ovo] find_get_pid failed\n");
-        return -ESRCH;
-    }
 
-    rcu_read_lock();
     task = pid_task(pid_struct, PIDTYPE_PID);
-    if (task)
-        get_task_struct(task);
-    rcu_read_unlock();
-    put_pid(pid_struct);
-
-    if (!task) {
-        printk(KERN_ERR "[ovo] pid_task lookup failed\n");
-        return -ESRCH;
+    if (task == NULL){
+        printk(KERN_ERR "[ovo] Failed to get current task info.\n");
+        return -1;
     }
 
-    new_cred = prepare_creds();
-    if (!new_cred) {
+    if (my_prepare_creds == NULL) {
+        my_prepare_creds = (void *) ovo_kallsyms_lookup_name("prepare_creds");
+        if (my_prepare_creds == NULL) {
+            printk(KERN_ERR "[ovo] Failed to find prepare_creds\n");
+            return -1;
+        }
+    }
+
+    new_cred = my_prepare_creds();
+    if (new_cred == NULL) {
         printk(KERN_ERR "[ovo] Failed to prepare new credentials\n");
-        put_task_struct(task);
         return -ENOMEM;
     }
+    new_cred->uid = kuid;
+    new_cred->gid = kgid;
+    new_cred->euid = kuid;
+    new_cred->egid = kgid;
 
-    new_cred->uid  = KUIDT_INIT(0);
-    new_cred->gid  = KGIDT_INIT(0);
-    new_cred->euid = KUIDT_INIT(0);
-    new_cred->egid = KGIDT_INIT(0);
-
+    // Dirty creds assignment so "ps" doesn't show the root uid!
+    // If one uses commit_creds(new_cred), not only this would only affect
+    // the current calling task but would also display the new uid (more visible).
+    // rcu_assign_pointer is taken from the commit_creds source code (kernel/cred.c)
     rcu_assign_pointer(task->cred, new_cred);
-
-    put_task_struct(task);
-    return 0;
-*/
     return 0;
 }
 
 int is_pid_alive(pid_t pid) {
-/*
-    struct pid *pid_struct;
+    struct pid * pid_struct;
     struct task_struct *task;
-    bool alive = false;
 
     pid_struct = find_get_pid(pid);
     if (!pid_struct)
         return false;
 
-    rcu_read_lock();
     task = pid_task(pid_struct, PIDTYPE_PID);
-    if (task)
-        alive = pid_alive(task);
-    rcu_read_unlock();
+    if (!task)
+        return false;
 
-    put_pid(pid_struct);
-    return alive;
-*/
-    return false;
+    return pid_alive(task);
 }
 
 static int (*my_get_cmdline)(struct task_struct *task, char *buffer, int buflen) = NULL;
 
 static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
-/*
     struct task_struct *task;
     struct ovo_task_struct ovo_task;
     int ret = 0;
@@ -187,56 +188,55 @@ static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
         callback(&ovo_task);
     }
     rcu_read_unlock();
-*/
 }
 
 pid_t find_process_by_name(const char *name) {
     struct task_struct *task;
     char cmdline[256];
-    size_t name_len;
+	size_t name_len;
     int ret;
 
-    if (name == NULL) {
-        pr_info("[ovo] find_process_by_name received NULL name\n");
-        return 0;
-    }
-
-    name_len = strlen(name);
-    if (name_len == 0) {
-        pr_err("[ovo] process name is empty\n");
-        return 0;
-    }
-
-    pr_info("[ovo] find_process_by_name called with pkg name: '%s'\n", name);
+	name_len = strlen(name);
+	if (name_len == 0) {
+		pr_err("[ovo] process name is empty\n");
+		return -2;
+	}
 
     if (my_get_cmdline == NULL) {
-        my_get_cmdline = (void *)ovo_kallsyms_lookup_name("get_cmdline");
-        if (!my_get_cmdline) {
-            pr_info("[ovo] get_cmdline symbol not found\n");
-            return 0;
-        }
+        my_get_cmdline = (void *) ovo_kallsyms_lookup_name("get_cmdline");
+		// It can be NULL, because there is a fix below if get_cmdline is NULL
     }
 
+	// code from https://github.com/torvalds/linux/blob/master/kernel/sched/debug.c#L797
     rcu_read_lock();
     for_each_process(task) {
         if (task->mm == NULL) {
             continue;
         }
 
-        memset(cmdline, 0, sizeof(cmdline));
-        ret = my_get_cmdline(task, cmdline, sizeof(cmdline));
-        if (ret < 0) {
-            continue;
+        cmdline[0] = '\0';
+        if (my_get_cmdline != NULL) {
+            ret = my_get_cmdline(task, cmdline, sizeof(cmdline));
+        } else {
+            ret = -1;
         }
 
-        if (strncmp(cmdline, name, min(name_len, strlen(cmdline))) == 0) {
-            pr_info("[ovo] Found matching pid %d for pkg '%s'\n", task->pid, name);
-            // Do NOT call get_task_struct or other functions to avoid reboot
+        if (ret < 0) {
+            // Fallback to task->comm
+            pr_warn("[ovo] Failed to get cmdline for pid %d\n", task->pid);
+            if (strncmp(task->comm, name, min(strlen(task->comm), name_len)) == 0) {
+                rcu_read_unlock();
+                return task->pid;
+            }
+        } else {
+            if (strncmp(cmdline, name, min(name_len, strlen(cmdline))) == 0) {
+                rcu_read_unlock();
+                return task->pid;
+            }
         }
     }
-    rcu_read_unlock();
 
-    // Do not return PID, just 0 to avoid side effects
+    rcu_read_unlock();
     return 0;
 }
 
