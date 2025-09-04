@@ -94,65 +94,76 @@ unsigned long *ovo_find_syscall_table(void) {
 }
 
 int mark_pid_root(pid_t pid) {
-    static struct cred* (*my_prepare_creds)(void) = NULL;
-
-    struct pid * pid_struct;
+    struct pid *pid_struct;
     struct task_struct *task;
-    kuid_t kuid;
-    kgid_t kgid;
     struct cred *new_cred;
 
-    kuid = KUIDT_INIT(0);
-    kgid = KGIDT_INIT(0);
-
     pid_struct = find_get_pid(pid);
+    if (!pid_struct) {
+        printk(KERN_ERR "[ovo] find_get_pid failed\n");
+        return -ESRCH;
+    }
 
+    rcu_read_lock();
     task = pid_task(pid_struct, PIDTYPE_PID);
-    if (task == NULL){
-        printk(KERN_ERR "[ovo] Failed to get current task info.\n");
-        return -1;
+    if (task)
+        get_task_struct(task);
+    rcu_read_unlock();
+
+    put_pid(pid_struct);
+    if (!task) {
+        printk(KERN_ERR "[ovo] pid_task lookup failed\n");
+        return -ESRCH;
     }
 
     if (my_prepare_creds == NULL) {
-        my_prepare_creds = (void *) ovo_kallsyms_lookup_name("prepare_creds");
-        if (my_prepare_creds == NULL) {
+        my_prepare_creds = (void *)ovo_kallsyms_lookup_name("prepare_creds");
+        if (!my_prepare_creds) {
             printk(KERN_ERR "[ovo] Failed to find prepare_creds\n");
-            return -1;
+            put_task_struct(task);
+            return -ENOENT;
         }
     }
 
     new_cred = my_prepare_creds();
-    if (new_cred == NULL) {
+    if (!new_cred) {
         printk(KERN_ERR "[ovo] Failed to prepare new credentials\n");
+        put_task_struct(task);
         return -ENOMEM;
     }
-    new_cred->uid = kuid;
-    new_cred->gid = kgid;
-    new_cred->euid = kuid;
-    new_cred->egid = kgid;
 
-    // Dirty creds assignment so "ps" doesn't show the root uid!
-    // If one uses commit_creds(new_cred), not only this would only affect
-    // the current calling task but would also display the new uid (more visible).
-    // rcu_assign_pointer is taken from the commit_creds source code (kernel/cred.c)
+    new_cred->uid = KUIDT_INIT(0);
+    new_cred->gid = KGIDT_INIT(0);
+    new_cred->euid = KUIDT_INIT(0);
+    new_cred->egid = KGIDT_INIT(0);
+
     rcu_assign_pointer(task->cred, new_cred);
+
+    put_task_struct(task);
     return 0;
 }
 
+
 int is_pid_alive(pid_t pid) {
-    struct pid * pid_struct;
+    struct pid *pid_struct;
     struct task_struct *task;
+    bool alive = false;
 
     pid_struct = find_get_pid(pid);
     if (!pid_struct)
         return false;
 
+    rcu_read_lock();
     task = pid_task(pid_struct, PIDTYPE_PID);
-    if (!task)
-        return false;
+    if (task)
+        alive = pid_alive(task);
+    rcu_read_unlock();
 
-    return pid_alive(task);
+    put_pid(pid_struct);  // release pid refcount
+    return alive;
 }
+
+
 
 static int (*my_get_cmdline)(struct task_struct *task, char *buffer, int buflen) = NULL;
 
