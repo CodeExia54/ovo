@@ -39,21 +39,24 @@ static int __init ovo_init(void) {
     int ret;
 
     //cuteBabyPleaseDontCry();
-    ret = 0;
-
     ret = init_server();
-	if(ret) {
-		return ret;
-	}
+    if (ret) {
+        pr_err("[ovo] init_server failed: %d\n", ret);
+        return ret;
+    }
 
-	ret = init_input_dev();
+    ret = init_input_dev();
+    if (ret) {
+        pr_err("[ovo] init_input_dev failed: %d\n", ret);
+        return ret;
+    }
 
-	if (!ret) {
-		init_addr_pfn_map();
-	}
+    init_addr_pfn_map();
 
-    return ret;
+    pr_info("[ovo] module initialized successfully\n");
+    return 0;
 }
+
 
 static void __exit ovo_exit(void) {
     exit_server();
