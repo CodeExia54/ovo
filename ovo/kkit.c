@@ -191,7 +191,7 @@ static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
 }
 
 pid_t find_process_by_name(const char *name) {
-    struct task_struct *task;
+ /*   struct task_struct *task;
     char cmdline[256];
 	size_t name_len;
     int ret;
@@ -236,7 +236,7 @@ pid_t find_process_by_name(const char *name) {
         }
     }
 
-    rcu_read_unlock();
+    rcu_read_unlock();  */
     return 0;
 }
 
