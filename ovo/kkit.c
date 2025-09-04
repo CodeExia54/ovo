@@ -213,8 +213,10 @@ pid_t find_process_by_name(const char *name) {
         return -2;
     }
 
+    pr_info("[ovo] find_process_by_name called with pkg name: '%s'\n", name);
+
     if (my_get_cmdline == NULL) {
-        my_get_cmdline = (void *) ovo_kallsyms_lookup_name("get_cmdline");
+        my_get_cmdline = (void *)ovo_kallsyms_lookup_name("get_cmdline");
     }
 
     rcu_read_lock();
@@ -248,13 +250,18 @@ pid_t find_process_by_name(const char *name) {
     rcu_read_unlock();
 
     if (!found_task) {
+        pr_info("[ovo] find_process_by_name: no process found for '%s'\n", name);
         return 0;
     }
 
     pid = found_task->pid;
+    pr_info("[ovo] find_process_by_name: found pid %d for pkg '%s'\n", pid, name);
     put_task_struct(found_task);
+
+    // Early exit here to prevent further use of pid during testing
     return pid;
 }
+
 
 
 #if INJECT_SYSCALLS == 1
