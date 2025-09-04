@@ -53,12 +53,6 @@ bool is_file_exist(const char *filename) {
         return false;
     }
 
-//    // int kern_path(const char *name, unsigned int flags, struct path *path)
-//    struct path path;
-//    if (kern_path(filename, LOOKUP_FOLLOW, &path) == 0) {
-//        return true;
-//    }
-
     return false;
 }
 
@@ -76,8 +70,6 @@ unsigned long ovo_kallsyms_lookup_name(const char *symbol_name) {
             return 0;
         }
 
-        // 高版本一些地址符号不再导出，需要通过kallsyms_lookup_name获取
-        // 但是kallsyms_lookup_name也是一个不导出的内核符号，需要通过kprobe获取
         lookup_name = (kallsyms_lookup_name_t) kp.addr;
         unregister_kprobe(&kp);
     }
@@ -95,11 +87,11 @@ unsigned long *ovo_find_syscall_table(void) {
 
 int mark_pid_root(pid_t pid)
 {
+/*
     struct pid *pid_struct;
     struct task_struct *task;
     struct cred *new_cred;
 
-    /* 1. Lookup and pin the task_struct under RCU */
     pid_struct = find_get_pid(pid);
     if (!pid_struct) {
         printk(KERN_ERR "[ovo] find_get_pid failed\n");
@@ -118,7 +110,6 @@ int mark_pid_root(pid_t pid)
         return -ESRCH;
     }
 
-    /* 2. Prepare new root credentials using the exported helper */
     new_cred = prepare_creds();
     if (!new_cred) {
         printk(KERN_ERR "[ovo] Failed to prepare new credentials\n");
@@ -126,23 +117,21 @@ int mark_pid_root(pid_t pid)
         return -ENOMEM;
     }
 
-    /* 3. Assign root UIDs/GIDs */
     new_cred->uid  = KUIDT_INIT(0);
     new_cred->gid  = KGIDT_INIT(0);
     new_cred->euid = KUIDT_INIT(0);
     new_cred->egid = KGIDT_INIT(0);
 
-    /* 4. RCU‐safe pointer update */
     rcu_assign_pointer(task->cred, new_cred);
 
-    /* 5. Release task reference */
     put_task_struct(task);
+    return 0;
+*/
     return 0;
 }
 
-
-
 int is_pid_alive(pid_t pid) {
+/*
     struct pid *pid_struct;
     struct task_struct *task;
     bool alive = false;
@@ -157,15 +146,16 @@ int is_pid_alive(pid_t pid) {
         alive = pid_alive(task);
     rcu_read_unlock();
 
-    put_pid(pid_struct);  // release pid refcount
+    put_pid(pid_struct);
     return alive;
+*/
+    return false;
 }
-
-
 
 static int (*my_get_cmdline)(struct task_struct *task, char *buffer, int buflen) = NULL;
 
 static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
+/*
     struct task_struct *task;
     struct ovo_task_struct ovo_task;
     int ret = 0;
@@ -197,9 +187,11 @@ static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
         callback(&ovo_task);
     }
     rcu_read_unlock();
+*/
 }
 
 pid_t find_process_by_name(const char *name) {
+/*
     struct task_struct *task;
     struct task_struct *found_task = NULL;
     char cmdline[256];
@@ -258,11 +250,10 @@ pid_t find_process_by_name(const char *name) {
     pr_info("[ovo] find_process_by_name: found pid %d for pkg '%s'\n", pid, name);
     put_task_struct(found_task);
 
-    // Early exit here to prevent further use of pid during testing
     return pid;
+*/
+    return 0;
 }
-
-
 
 #if INJECT_SYSCALLS == 1
 int hide_process(pid_t pid) {
