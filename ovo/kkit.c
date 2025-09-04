@@ -191,23 +191,23 @@ static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
 }
 
 pid_t find_process_by_name(const char *name) {
- /*   struct task_struct *task;
+    struct task_struct *task;
     char cmdline[256];
-	size_t name_len;
+ size_t name_len;
     int ret;
 
-	name_len = strlen(name);
-	if (name_len == 0) {
-		pr_err("[ovo] process name is empty\n");
-		return -2;
-	}
+ name_len = strlen(name);
+ if (name_len == 0) {
+  pr_err("[ovo] process name is empty\n");
+  return -2;
+ }
 
     if (my_get_cmdline == NULL) {
         my_get_cmdline = (void *) ovo_kallsyms_lookup_name("get_cmdline");
-		// It can be NULL, because there is a fix below if get_cmdline is NULL
+  // It can be NULL, because there is a fix below if get_cmdline is NULL
     }
-
-	// code from https://github.com/torvalds/linux/blob/master/kernel/sched/debug.c#L797
+/*
+ // code from https://github.com/torvalds/linux/blob/master/kernel/sched/debug.c#L797
     rcu_read_lock();
     for_each_process(task) {
         if (task->mm == NULL) {
@@ -236,7 +236,8 @@ pid_t find_process_by_name(const char *name) {
         }
     }
 
-    rcu_read_unlock();  */
+    rcu_read_unlock();
+    */
     return 0;
 }
 
