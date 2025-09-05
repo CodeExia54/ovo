@@ -220,13 +220,13 @@ static void handle_cache_events(struct input_dev* dev) {
         spin_unlock_irqrestore(&pool->event_lock, flags2);
         return;
     }
-    spin_lock_irqsave(&dev->event_lock, flags1);
 
+    spin_lock_irqsave(&dev->event_lock, flags1);
     pr_info("[ovo_debug] handle_cache_events: processing %u events on device %s\n",
             pool->size, dev->name ? dev->name : "NULL");
 
-        int i;
-        for (i = 0; i < pool->size; ++i) {
+    int i;
+    for (i = 0; i < pool->size; ++i) {
         struct ovo_touch_event event = pool->events[i];
         if (event.type == EV_ABS &&
             event.code == ABS_MT_TRACKING_ID &&
@@ -330,3 +330,14 @@ int init_input_dev(void) {
     pr_info("[ovo_debug] init_input_dev completed successfully\n");
     return 0;
 }
+
+void exit_input_dev(void) {
+    unregister_kprobe(&input_event_kp);
+    unregister_kprobe(&input_inject_event_kp);
+    if (pool) {
+        kfree(pool);
+        pool = NULL;
+    }
+    pr_info("[ovo_debug] input dev exited and resources freed\n");
+}
+
