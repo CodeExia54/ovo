@@ -442,4 +442,15 @@ int init_input_dev(void) {
 }
 
 void exit_input_dev(void) {
-    pr_info("[ovo_debug] exit
+    pr_info("[ovo_debug] exit_input_dev start at jiffies=%lu\n", jiffies);
+
+    unregister_kprobe(&input_event_kp);
+    unregister_kprobe(&input_inject_event_kp);
+
+    if (pool) {
+        kfree(pool);
+        pool = NULL;
+    }
+
+    pr_info("[ovo_debug] input_dev exited and resources freed at jiffies=%lu\n", jiffies);
+}
