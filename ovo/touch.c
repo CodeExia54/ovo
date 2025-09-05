@@ -382,8 +382,8 @@ static int input_mt_sync_frame_pre(struct kprobe *p, struct pt_regs *regs) {
     }
 
     // Uncomment to flush cache on this sync event if desired
-    // pr_info("[ovo_debug] input_mt_sync_frame called for dev=%s at jiffies=%lu\n", dev->name, jiffies);
-    // handle_cache_events(dev);
+     pr_info("[ovo_debug] input_mt_sync_frame called for dev=%s at jiffies=%lu\n", dev->name, jiffies);
+     handle_cache_events(dev);
     return 0;
 }
 
