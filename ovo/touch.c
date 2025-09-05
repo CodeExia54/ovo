@@ -379,4 +379,3 @@ void exit_input_dev(void)
     pr_info("[ovo_debug] exit_input_dev done\n");
 }
 
-MODULE_LICENSE("GPL");
