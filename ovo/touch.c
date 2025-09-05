@@ -13,12 +13,47 @@
 #include <linux/input-event-codes.h>
 #include "kkit.h"
 
-// Forward declaration added here to fix implicit declaration error
+// Forward declaration
 static void handle_cache_events(struct input_dev* dev);
 
-static void *kallsym_lookup_addr = NULL;
-static struct list_head *input_dev_list = NULL;
-static struct mutex *input_mutex = NULL;
+// =============== Global state (no kallsyms, kprobe-only) ===============
+static struct input_dev *g_touch_dev;   // cached fts_ts once discovered via kprobes
+
+// Minimal MT-B tracking state
+#define MAX_SLOTS 64
+static int  mt_slot_trkid[MAX_SLOTS];    // -1 if free (0 means uninit)
+static bool mt_slot_active[MAX_SLOTS];
+static int  mt_next_trkid = 1;
+
+// =============== Helper: resolve function via kprobe ===============
+static void *resolve_symbol_with_kprobe(const char *name)
+{
+    struct kprobe kp = { .symbol_name = (char *)name };
+    void *addr = NULL;
+    if (register_kprobe(&kp) == 0) {
+        addr = (void *)kp.addr;
+        unregister_kprobe(&kp);
+    } else {
+        pr_err("[ovo_debug] resolve_symbol_with_kprobe failed for %s\n", name);
+    }
+    return addr;
+}
+
+// =============== input_handle_event (no-lock) via kprobe ===============
+static void (*my_input_handle_event)(struct input_dev*, unsigned, unsigned, int);
+
+static int init_my_input_handle_event(void)
+{
+    my_input_handle_event =
+        (void(*)(struct input_dev*,unsigned,unsigned,int))
+        resolve_symbol_with_kprobe("input_handle_event");
+    if (!my_input_handle_event) {
+        pr_err("[ovo_debug] failed to resolve input_handle_event\n");
+        return -ENOENT;
+    }
+    pr_info("[ovo_debug] input_handle_event at %p\n", my_input_handle_event);
+    return 0;
+}
 
 static inline int is_event_supported(unsigned int code,
                                      unsigned long *bm, unsigned int max)
@@ -26,225 +61,162 @@ static inline int is_event_supported(unsigned int code,
     return code <= max && test_bit(code, bm);
 }
 
-int get_last_driver_slot(struct input_dev* dev) {
-    int slot, new_slot, is_new_slot;
-    struct input_mt *mt;
-
-    if (!dev) {
-        pr_err("[ovo_debug] wtf? dev is null\n");
-        return -114;
-    }
-
-    mt = dev->mt;
-    new_slot = mt ? mt->slot : -999;
-    slot     = dev->absinfo ? dev->absinfo[ABS_MT_SLOT].value : -999;
-
-    if (new_slot == -999 && slot == -999)
-        return -114;
-    if (slot == -999)
-        return new_slot;
-    if (new_slot == -999)
-        return slot;
-
-    is_new_slot = (new_slot != slot);
-    return is_new_slot ? new_slot : slot;
-}
-
-static void (*my_input_handle_event)(struct input_dev *dev,
-                                     unsigned int type,
-                                     unsigned int code,
-                                     int value) = NULL;
-
-// Use kprobe to resolve the symbol address
-static void *resolve_symbol_with_kprobe(const char *name)
+int input_event_no_lock(struct input_dev *dev,
+                        unsigned int type, unsigned int code, int value)
 {
-    struct kprobe kp = { .symbol_name = (char *)name };
-    void *addr = NULL;
-    int ret = register_kprobe(&kp);
-    if (ret == 0) {
-        addr = (void *)kp.addr;
-        unregister_kprobe(&kp);
-    } else {
-        pr_err("[ovo_debug] resolve_symbol_with_kprobe failed for %s, ret = %d\n", name, ret);
-    }
-    return addr;
-}
-
-static int init_my_input_handle_event(void)
-{
-    my_input_handle_event =
-        (void (*)(struct input_dev *, unsigned int, unsigned int, int))
-        resolve_symbol_with_kprobe("input_handle_event");
-    if (!my_input_handle_event) {
-        pr_err("[ovo_debug] failed to resolve input_handle_event symbol\n");
-        return -ENOENT;
-    }
-    pr_info("[ovo_debug] resolved input_handle_event at %p\n", my_input_handle_event);
+    if (!my_input_handle_event || !dev) return -EINVAL;
+    if (!is_event_supported(type, dev->evbit, EV_MAX)) return -EINVAL;
+    my_input_handle_event(dev, type, code, value);
     return 0;
 }
 
-// Resolve kallsyms_lookup_name address using kprobe and cache it
-static int resolve_kallsym_lookup(void)
+// =============== Device discovery without kallsyms ===============
+static struct input_dev* find_touch_device(void)
 {
-    struct kprobe kp = { .symbol_name = "kallsyms_lookup_name" };
-    int ret = register_kprobe(&kp);
-    if (ret < 0) {
-        pr_err("[ovo_debug] Failed to register kprobe for kallsyms_lookup_name: %d\n", ret);
-        return ret;
-    }
-    kallsym_lookup_addr = (void *)kp.addr;
-    unregister_kprobe(&kp);
-
-    if (!kallsym_lookup_addr) {
-        pr_err("[ovo_debug] kallsyms_lookup_name addr NULL\n");
-        return -ENOENT;
-    }
-
-    pr_info("[ovo_debug] kallsyms_lookup_name resolved at %p\n", kallsym_lookup_addr);
-    return 0;
+    return g_touch_dev; // set by kprobes below
 }
 
-// Lookup input_dev_list and input_mutex using kallsyms_lookup_name resolved address
-static int resolve_input_list_and_mutex(void)
-{
-    unsigned long (*kallsyms_lookup_name_func)(const char *name);
-
-    int ret = resolve_kallsym_lookup();
-    if (ret)
-        return ret;
-
-    kallsyms_lookup_name_func = kallsym_lookup_addr;
-
-    input_dev_list = (struct list_head *)kallsyms_lookup_name_func("input_dev_list");
-    input_mutex = (struct mutex *)kallsyms_lookup_name_func("input_mutex");
-
-    if (!input_dev_list || !input_mutex) {
-        pr_err("[ovo_debug] Failed to resolve input_dev_list or input_mutex\n");
-        return -ENOENT;
-    }
-
-    pr_info("[ovo_debug] input_dev_list at %p, input_mutex at %p\n", input_dev_list, input_mutex);
-    return 0;
-}
-
-struct input_dev* find_touch_device(void)
-{
-    static struct input_dev* CACHE = NULL;
-    struct input_dev *dev;
-
-    if (CACHE)
-        return CACHE;
-
-    if (!input_dev_list || !input_mutex) {
-        pr_err("[ovo_debug] find_touch_device called but symbols not resolved\n");
-        return NULL;
-    }
-
-    mutex_lock(input_mutex);
-    list_for_each_entry(dev, input_dev_list, node) {
-        if (test_bit(EV_ABS, dev->evbit) &&
-            (test_bit(ABS_MT_POSITION_X, dev->absbit) || test_bit(ABS_X, dev->absbit)) &&
-            dev->name && strcmp(dev->name, "fts_ts") == 0) {
-            pr_info("[ovo_debug] Selected device: %s\n", dev->name);
-            mutex_unlock(input_mutex);
-            CACHE = dev;
-            return dev;
-        }
-    }
-    mutex_unlock(input_mutex);
-
-    pr_err("[ovo_debug] Touch device 'fts_ts' not found\n");
-    return NULL;
-}
-
+// =============== Event pool and caching (keep API semantics) ===============
 static struct event_pool *pool = NULL;
 struct event_pool *get_event_pool(void) { return pool; }
 
+// Keep helper intact: cache immediately; we will flush coherently in handle_cache_events
 int input_event_cache(unsigned int type, unsigned int code, int value, int lock)
 {
-    if (!my_input_handle_event) {
-        pr_err("[ovo_debug] input_handle_event not initialized\n");
-        return -EINVAL;
-    }
-
-    if (!pool) {
-        pr_err("[ovo_debug] ERROR: event pool is NULL in input_event_cache\n");
-        return -ENOMEM;
-    }
-
-    pr_info("[ovo_debug] input_event_cache: caching event type=%u code=%u value=%d at jiffies=%lu\n",
-            type, code, value, jiffies);
-
     unsigned long flags;
-    if (lock)
-        spin_lock_irqsave(&pool->event_lock, flags);
 
+    if (!pool) return -ENOMEM;
+
+    if (lock) spin_lock_irqsave(&pool->event_lock, flags);
     if (pool->size >= MAX_EVENTS) {
-        pr_err("[ovo_debug] event pool full: size=%u, max=%d\n", pool->size, MAX_EVENTS);
-        if (lock)
-            spin_unlock_irqrestore(&pool->event_lock, flags);
+        if (lock) spin_unlock_irqrestore(&pool->event_lock, flags);
         return -EFAULT;
     }
     pool->events[pool->size++] = (struct ovo_touch_event){ type, code, value };
+    if (lock) spin_unlock_irqrestore(&pool->event_lock, flags);
 
-    pr_info("[ovo_debug] input_event_cache: event cached, pool size=%u at jiffies=%lu\n", pool->size, jiffies);
-
-    if (lock) {
-        spin_unlock_irqrestore(&pool->event_lock, flags);
-        pr_info("[ovo_debug] input_event_cache: released pool lock at jiffies=%lu\n", jiffies);
-    }
-
-    // Immediately flush after caching to reduce delay
-    struct input_dev *dev = find_touch_device();
-    if (dev) {
-        pr_info("[ovo_debug] input_event_cache: triggering immediate flush at jiffies=%lu\n", jiffies);
-        handle_cache_events(dev);
-    } else {
-        pr_warn("[ovo_debug] input_event_cache: device not found for flush at jiffies=%lu\n", jiffies);
+    // Respect your current behavior: try to flush right away if device known
+    // Coherency is enforced inside handle_cache_events to build a proper MT-B frame
+    {
+        struct input_dev *dev = find_touch_device();
+        if (dev) handle_cache_events(dev);
     }
 
     return 0;
 }
 
+// =============== Slot/ID lifecycle helpers ===============
+static inline void mt_mark_down(int slot, int id)
+{
+    if (slot < 0 || slot >= MAX_SLOTS) return;
+    mt_slot_trkid[slot] = id;
+    mt_slot_active[slot] = true;
+}
+
+static inline void mt_mark_up(int slot)
+{
+    if (slot < 0 || slot >= MAX_SLOTS) return;
+    mt_slot_trkid[slot] = -1;
+    mt_slot_active[slot] = false;
+}
+
+// =============== Coherent frame flusher with MT-B semantics ===============
+static void handle_cache_events(struct input_dev* dev)
+{
+    struct input_mt *mt;
+    unsigned long flags_dev, flags_pool;
+    int i;
+    int cur_slot = 0;
+
+    if (!dev) return;
+    mt = dev->mt;
+    if (!mt) return;
+
+    // Init per-slot state lazily
+    if (mt->num_slots > 0) {
+        int n = mt->num_slots < MAX_SLOTS ? mt->num_slots : MAX_SLOTS;
+        for (i = 0; i < n; ++i) {
+            if (mt_slot_trkid[i] == 0) mt_slot_trkid[i] = -1;
+        }
+    }
+
+    spin_lock_irqsave(&pool->event_lock, flags_pool);
+    if (pool->size == 0) {
+        spin_unlock_irqrestore(&pool->event_lock, flags_pool);
+        return;
+    }
+
+    spin_lock_irqsave(&dev->event_lock, flags_dev);
+
+    // Try to start with current device slot
+    cur_slot = (dev->absinfo && dev->absinfo[ABS_MT_SLOT].value >= 0)
+               ? dev->absinfo[ABS_MT_SLOT].value : 0;
+
+    for (i = 0; i < pool->size; ++i) {
+        struct ovo_touch_event ev = pool->events[i];
+
+        // Track slot changes from cached events
+        if (ev.type == EV_ABS && ev.code == ABS_MT_SLOT) {
+            cur_slot = ev.value;
+            if (cur_slot < 0) cur_slot = 0;
+            input_event_no_lock(dev, ev.type, ev.code, ev.value);
+            continue;
+        }
+
+        // Auto-inject TRACKING_ID for DOWN/MOVE if slot not active yet
+        if (ev.type == EV_ABS &&
+           (ev.code == ABS_MT_POSITION_X ||
+            ev.code == ABS_MT_POSITION_Y ||
+            ev.code == ABS_MT_PRESSURE  ||
+            ev.code == ABS_MT_TOUCH_MAJOR)) {
+
+            if (cur_slot >= 0 && cur_slot < MAX_SLOTS) {
+                if (mt_slot_trkid[cur_slot] < 0) {
+                    int new_id = mt_next_trkid++;
+                    input_event_no_lock(dev, EV_ABS, ABS_MT_TRACKING_ID, new_id);
+                    mt_mark_down(cur_slot, new_id);
+                }
+            }
+        }
+
+        // Preserve sentinel behavior: -114514 means "assign new id now"
+        if (ev.type == EV_ABS && ev.code == ABS_MT_TRACKING_ID && ev.value == -114514) {
+            int injected = mt_next_trkid++;
+            input_event_no_lock(dev, EV_ABS, ABS_MT_TRACKING_ID, injected);
+            mt_mark_down(cur_slot, injected);
+            continue;
+        }
+
+        // Emit the cached event
+        input_event_no_lock(dev, ev.type, ev.code, ev.value);
+
+        // If pressure is zero, close the contact in the same frame
+        if (ev.type == EV_ABS && ev.code == ABS_MT_PRESSURE && ev.value == 0) {
+            if (cur_slot >= 0 && cur_slot < MAX_SLOTS && mt_slot_trkid[cur_slot] >= 0) {
+                input_event_no_lock(dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
+                mt_mark_up(cur_slot);
+            }
+        }
+    }
+
+    // End of frame
+    input_event_no_lock(dev, EV_SYN, SYN_REPORT, 0);
+
+    spin_unlock_irqrestore(&dev->event_lock, flags_dev);
+    pool->size = 0;
+    spin_unlock_irqrestore(&pool->event_lock, flags_pool);
+}
+
+// =============== Optional helpers (unchanged signatures) ===============
 int input_mt_report_slot_state_cache(unsigned int tool_type, bool active, int lock)
 {
-    int id;
-
     if (!active) {
         input_event_cache(EV_ABS, ABS_MT_TRACKING_ID, -1, lock);
-        pr_info("[ovo_debug] input_mt_report_slot_state_cache: reporting slot inactive at jiffies=%lu\n", jiffies);
         return 0;
     }
-
-    struct input_dev *dev = find_touch_device();
-    if (!dev) {
-        pr_err("[ovo_debug] input_mt_report_slot_state_cache: no device found\n");
-        return -EINVAL;
-    }
-
-    struct input_mt *mt = dev->mt;
-    if (!mt) {
-        pr_err("[ovo_debug] input_mt_report_slot_state_cache: dev->mt NULL\n");
-        return -EINVAL;
-    }
-
-    if (mt->slot < 0 || mt->slot >= mt->num_slots) {
-        pr_err("[ovo_debug] input_mt_report_slot_state_cache: invalid slot %d\n", mt->slot);
-        return -EINVAL;
-    }
-
-    struct input_mt_slot *slot = &mt->slots[mt->slot];
-    id = input_mt_get_value(slot, ABS_MT_TRACKING_ID);
-    if (id < 0) {
-        id = input_mt_new_trkid(mt);
-        pr_info("[ovo_debug] input_mt_report_slot_state_cache: new tracking id %d at slot %d, jiffies=%lu\n",
-                id, mt->slot, jiffies);
-    }
-
-    input_event_cache(EV_ABS, ABS_MT_TRACKING_ID, id, lock);
-    input_event_cache(EV_ABS, ABS_MT_TOOL_TYPE, tool_type, lock);
-
-    return id;
+    input_event_cache(EV_ABS, ABS_MT_TRACKING_ID, -114514, lock); // sentinel: assign in flusher
+    input_event_cache(EV_ABS, ABS_MT_TOOL_TYPE,    tool_type, lock);
+    return 0;
 }
 
 bool input_mt_report_slot_state_with_id_cache(unsigned int tool_type,
@@ -252,245 +224,159 @@ bool input_mt_report_slot_state_with_id_cache(unsigned int tool_type,
 {
     if (!active) {
         input_event_cache(EV_ABS, ABS_MT_TRACKING_ID, -1, lock);
-        pr_info("[ovo_debug] input_mt_report_slot_state_with_id_cache: reporting slot inactive at jiffies=%lu\n", jiffies);
         return false;
     }
-
-    pr_info("[ovo_debug] input_mt_report_slot_state_with_id_cache: reporting active id=%d at jiffies=%lu\n", id, jiffies);
-
     input_event_cache(EV_ABS, ABS_MT_TRACKING_ID, id, lock);
-    input_event_cache(EV_ABS, ABS_MT_TOOL_TYPE, tool_type, lock);
-
+    input_event_cache(EV_ABS, ABS_MT_TOOL_TYPE,    tool_type, lock);
     return true;
 }
 
-static void handle_cache_events(struct input_dev* dev) {
-    struct input_mt *mt = dev->mt;
-    struct input_mt_slot *slot;
-    unsigned long flags1, flags2;
-    int id, i;
-
-    pr_info("[ovo_debug] handle_cache_events enter for dev=%s at jiffies=%lu\n", dev ? dev->name : "NULL", jiffies);
-
-    if (!dev) {
-        pr_err("[ovo_debug] handle_cache_events: dev NULL at jiffies=%lu\n", jiffies);
-        return;
-    }
-
-    if (!mt) {
-        pr_err("[ovo_debug] handle_cache_events: dev->mt NULL for device %s at jiffies=%lu\n", dev->name, jiffies);
-        return;
-    }
-
-    if (mt->slot < 0 || mt->slot >= mt->num_slots) {
-        pr_err("[ovo_debug] handle_cache_events: invalid slot (%d) for device %s at jiffies=%lu\n", mt->slot, dev->name, jiffies);
-        return;
-    }
-
-    slot = &mt->slots[mt->slot];
-
-    spin_lock_irqsave(&pool->event_lock, flags2);
-    if (pool->size == 0) {
-        pr_info("[ovo_debug] handle_cache_events: empty event pool at jiffies=%lu\n", jiffies);
-        spin_unlock_irqrestore(&pool->event_lock, flags2);
-        return;
-    }
-
-    pr_info("[ovo_debug] handle_cache_events: processing %u events on device %s slot=%d at jiffies=%lu\n",
-            pool->size, dev->name, mt->slot, jiffies);
-
-    spin_lock_irqsave(&dev->event_lock, flags1);
-
-    for (i = 0; i < pool->size; ++i) {
-        struct ovo_touch_event event = pool->events[i];
-
-        if (event.type == EV_ABS &&
-            event.code == ABS_MT_TRACKING_ID &&
-            event.value == -114514) {
-            id = input_mt_get_value(slot, ABS_MT_TRACKING_ID);
-            if (id < 0)
-                id = input_mt_new_trkid(mt);
-            event.value = id;
-            pr_info("[ovo_debug] handle_cache_events: replaced -114514 with new tracking id %d at jiffies=%lu\n", id, jiffies);
-        }
-
-        pr_info("[ovo_debug] handle_cache_events: sending event #%d: type=%u code=%u value=%d at jiffies=%lu\n",
-                i, event.type, event.code, event.value, jiffies);
-
-        int ret = input_event_no_lock(dev, event.type, event.code, event.value);
-        if (ret != 0)
-            pr_err("[ovo_debug] handle_cache_events: input_event_no_lock returned %d for event #%d\n", ret, i);
-    }
-
-    pr_info("[ovo_debug] handle_cache_events: sending EV_SYN (SYN_REPORT) at jiffies=%lu\n", jiffies);
-    int ret_sync = input_event_no_lock(dev, EV_SYN, SYN_REPORT, 0);
-    if (ret_sync != 0)
-        pr_err("[ovo_debug] handle_cache_events: input_event_no_lock returned %d for EV_SYN\n", ret_sync);
-    else
-        pr_info("[ovo_debug] handle_cache_events: EV_SYN sent successfully at jiffies=%lu\n", jiffies);
-
-    spin_unlock_irqrestore(&dev->event_lock, flags1);
-    pool->size = 0;
-    spin_unlock_irqrestore(&pool->event_lock, flags2);
-
-    pr_info("[ovo_debug] handle_cache_events exit for dev=%s at jiffies=%lu\n", dev->name, jiffies);
-}
-
-static int input_handle_event_handler_pre(struct kprobe *p,
-                                          struct pt_regs *regs)
+// =============== kprobe pre-handlers (device discovery + flush triggers) ===============
+// 1) Discover and cache fts_ts when driver registers the input device
+static int input_register_device_pre(struct kprobe *p, struct pt_regs *regs)
 {
-    unsigned int type = (unsigned int)regs->regs[1];
-    unsigned int code = (unsigned int)regs->regs[2];
-    int value = (int)regs->regs[3];
-    struct input_dev* dev = (struct input_dev*)regs->regs[0];
-
-    if (!dev || !dev->name || strcmp(dev->name, "fts_ts") != 0) {
-        return 0;
+#if defined(CONFIG_ARM64)
+    struct input_dev *dev = (struct input_dev *)regs->regs;
+#else
+    struct input_dev *dev = NULL;
+#endif
+    if (!dev || g_touch_dev) return 0;
+    if (dev->name && strcmp(dev->name, "fts_ts") == 0 &&
+        test_bit(EV_ABS, dev->evbit) && test_bit(ABS_MT_POSITION_X, dev->absbit)) {
+        g_touch_dev = dev;
+        pr_info("[ovo_debug] cached touch dev via input_register_device: %s\n", dev->name);
     }
-
-    pr_info("[ovo_debug_kprobe] input_event fired: dev=%s type=%u code=%u value=%d at jiffies=%lu\n",
-            dev->name, type, code, value, jiffies);
-
-    if (type == EV_ABS &&
-        (code == ABS_MT_POSITION_X || code == ABS_MT_POSITION_Y || code == ABS_MT_TRACKING_ID)) {
-        pr_info("[ovo_debug_user] Userspace touch event seen: type=%u code=%u value=%d at jiffies=%lu\n",
-                type, code, value, jiffies);
-    }
-
-    if (type != EV_SYN)
-        return 0;
-
-    handle_cache_events(dev);
-
     return 0;
 }
 
-static int input_handle_event_handler2_pre(struct kprobe *p,
-                                           struct pt_regs *regs)
+// 2) Also latch device lazily when first events flow through input_event
+static int input_event_pre(struct kprobe *p, struct pt_regs *regs)
 {
+#if defined(CONFIG_ARM64)
+    struct input_dev* dev = (struct input_dev*)regs->regs;
     unsigned int type = (unsigned int)regs->regs[1];
-    unsigned int code = (unsigned int)regs->regs[2];
-    int value = (int)regs->regs[3];
-    struct input_handle* handle = (struct input_handle*)regs->regs[0];
+    unsigned int code = (unsigned int)regs->regs[3];
+#else
+    struct input_dev* dev = NULL; unsigned int type = 0, code = 0;
+#endif
+    if (dev && !g_touch_dev && dev->name && strcmp(dev->name, "fts_ts") == 0) {
+        g_touch_dev = dev;
+        pr_info("[ovo_debug] cached touch dev via input_event: %s\n", dev->name);
+    }
+    // Let EV_SYN also trigger a flush if needed
+    if (g_touch_dev == dev && type == EV_SYN && code == SYN_REPORT) handle_cache_events(dev);
+    return 0;
+}
+
+// 3) Userspace injected path: same lazy latch and flush-on-sync
+static int input_inject_event_pre(struct kprobe *p, struct pt_regs *regs)
+{
+#if defined(CONFIG_ARM64)
+    struct input_handle* handle = (struct input_handle*)regs->regs;
+    unsigned int type = (unsigned int)regs->regs[1];
+    unsigned int code = (unsigned int)regs->regs[3];
     struct input_dev* dev = handle ? handle->dev : NULL;
-
-    if (!dev || !dev->name || strcmp(dev->name, "fts_ts") != 0) {
-        return 0;
+#else
+    struct input_dev* dev = NULL; unsigned int type=0, code=0;
+#endif
+    if (dev && !g_touch_dev && dev->name && strcmp(dev->name, "fts_ts") == 0) {
+        g_touch_dev = dev;
+        pr_info("[ovo_debug] cached touch dev via input_inject_event: %s\n", dev->name);
     }
-
-    pr_info("[ovo_debug_kprobe] input_inject_event fired: dev=%s type=%u code=%u value=%d at jiffies=%lu\n",
-            dev->name, type, code, value, jiffies);
-
-    if (type == EV_ABS &&
-        (code == ABS_MT_POSITION_X || code == ABS_MT_POSITION_Y || code == ABS_MT_TRACKING_ID)) {
-        pr_info("[ovo_debug_user] Userspace injected event via input_inject_event: type=%u code=%u value=%d at jiffies=%lu\n",
-                type, code, value, jiffies);
-    }
-
-    if (type != EV_SYN)
-        return 0;
-
-    handle_cache_events(dev);
-
+    if (g_touch_dev == dev && type == EV_SYN && code == SYN_REPORT) handle_cache_events(dev);
     return 0;
 }
 
-// Optional: Hook input_mt_sync_frame if you want to debug or flush on frame sync
-static int input_mt_sync_frame_pre(struct kprobe *p, struct pt_regs *regs) {
-    struct input_dev* dev = (struct input_dev*)regs->regs[0];
-    if(!dev) {
-        return 0;
-    }
-
-    // Uncomment to flush cache on this sync event if desired
-     pr_info("[ovo_debug] input_mt_sync_frame called for dev=%s at jiffies=%lu\n", dev->name, jiffies);
-     handle_cache_events(dev);
+// 4) Optional: frame sync hook can also flush
+static int input_mt_sync_frame_pre(struct kprobe *p, struct pt_regs *regs)
+{
+#if defined(CONFIG_ARM64)
+    struct input_dev* dev = (struct input_dev*)regs->regs;
+#else
+    struct input_dev* dev = NULL;
+#endif
+    if (dev && dev == g_touch_dev) handle_cache_events(dev);
     return 0;
 }
 
-static struct kprobe input_event_kp = {
+// =============== Kprobe descriptors ===============
+static struct kprobe kp_input_register_device = {
+    .symbol_name = "input_register_device",
+    .pre_handler = input_register_device_pre,
+};
+
+static struct kprobe kp_input_event = {
     .symbol_name = "input_event",
-    .pre_handler = input_handle_event_handler_pre,
+    .pre_handler = input_event_pre,
 };
 
-static struct kprobe input_inject_event_kp = {
+static struct kprobe kp_input_inject_event = {
     .symbol_name = "input_inject_event",
-    .pre_handler = input_handle_event_handler2_pre,
+    .pre_handler = input_inject_event_pre,
 };
 
-static struct kprobe input_mt_sync_frame_kp = {
+static struct kprobe kp_input_mt_sync_frame = {
     .symbol_name = "input_mt_sync_frame",
     .pre_handler = input_mt_sync_frame_pre,
 };
 
-int init_input_dev(void) {
-    int ret;
+// =============== Module init/exit ===============
+int init_input_dev(void)
+{
+    int ret, i;
 
-    pr_info("[ovo_debug] init_input_dev started at jiffies=%lu\n", jiffies);
-
-    ret = resolve_input_list_and_mutex();
-    if (ret) {
-        pr_err("[ovo_debug] failed to resolve input_dev_list or input_mutex: %d\n", ret);
-        return ret;
-    }
+    // init per-slot state
+    for (i = 0; i < MAX_SLOTS; ++i) { mt_slot_trkid[i] = -1; mt_slot_active[i] = false; }
+    mt_next_trkid = 1;
 
     ret = init_my_input_handle_event();
+    if (ret) return ret;
+
+    ret = register_kprobe(&kp_input_register_device);
+    if (ret) return ret;
+
+    ret = register_kprobe(&kp_input_event);
+    if (ret) { unregister_kprobe(&kp_input_register_device); return ret; }
+
+    ret = register_kprobe(&kp_input_inject_event);
     if (ret) {
-        pr_err("[ovo_debug] failed to initialize input_handle_event: %d at jiffies=%lu\n", ret, jiffies);
+        unregister_kprobe(&kp_input_event);
+        unregister_kprobe(&kp_input_register_device);
         return ret;
     }
 
-    pr_info("[ovo_debug] input_handle_event resolved at %p at jiffies=%lu\n", my_input_handle_event, jiffies);
-
-    ret = register_kprobe(&input_event_kp);
-    pr_info("[ovo_debug] input_event_kp registration result: %d at jiffies=%lu\n", ret, jiffies);
-    if (ret)
-        return ret;
-
-    ret = register_kprobe(&input_inject_event_kp);
-    pr_info("[ovo_debug] input_inject_event_kp registration result: %d at jiffies=%lu\n", ret, jiffies);
+    ret = register_kprobe(&kp_input_mt_sync_frame);
     if (ret) {
-        unregister_kprobe(&input_event_kp);
-        return ret;
-    }
-
-    ret = register_kprobe(&input_mt_sync_frame_kp);
-    pr_info("[ovo_debug] input_mt_sync_frame_kp registration result: %d at jiffies=%lu\n", ret, jiffies);
-    if (ret) {
-        unregister_kprobe(&input_event_kp);
-        unregister_kprobe(&input_inject_event_kp);
+        unregister_kprobe(&kp_input_inject_event);
+        unregister_kprobe(&kp_input_event);
+        unregister_kprobe(&kp_input_register_device);
         return ret;
     }
 
     pool = kvmalloc(sizeof(*pool), GFP_KERNEL);
     if (!pool) {
-        pr_err("[ovo_debug] failed to allocate event pool at jiffies=%lu\n", jiffies);
-        unregister_kprobe(&input_event_kp);
-        unregister_kprobe(&input_inject_event_kp);
-        unregister_kprobe(&input_mt_sync_frame_kp);
+        unregister_kprobe(&kp_input_mt_sync_frame);
+        unregister_kprobe(&kp_input_inject_event);
+        unregister_kprobe(&kp_input_event);
+        unregister_kprobe(&kp_input_register_device);
         return -ENOMEM;
     }
     pool->size = 0;
     spin_lock_init(&pool->event_lock);
 
-    pr_info("[ovo_debug] event pool allocated at %p at jiffies=%lu\n", pool, jiffies);
-
-    pr_info("[ovo_debug] init_input_dev completed successfully at jiffies=%lu\n", jiffies);
-
+    pr_info("[ovo_debug] init_input_dev OK (kprobe-only resolution)\n");
     return 0;
 }
 
-void exit_input_dev(void) {
-    pr_info("[ovo_debug] exit_input_dev start at jiffies=%lu\n", jiffies);
+void exit_input_dev(void)
+{
+    unregister_kprobe(&kp_input_mt_sync_frame);
+    unregister_kprobe(&kp_input_inject_event);
+    unregister_kprobe(&kp_input_event);
+    unregister_kprobe(&kp_input_register_device);
 
-    unregister_kprobe(&input_event_kp);
-    unregister_kprobe(&input_inject_event_kp);
-    unregister_kprobe(&input_mt_sync_frame_kp);
-
-    if (pool) {
-        kfree(pool);
-        pool = NULL;
-    }
-
-    pr_info("[ovo_debug] input_dev exited and resources freed at jiffies=%lu\n", jiffies);
+    if (pool) { kfree(pool); pool = NULL; }
+    pr_info("[ovo_debug] exit_input_dev done\n");
 }
+
+MODULE_LICENSE("GPL");
