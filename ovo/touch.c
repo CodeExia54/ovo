@@ -16,6 +16,10 @@
 // Forward declaration added here to fix implicit declaration error
 static void handle_cache_events(struct input_dev* dev);
 
+static void *kallsym_lookup_addr = NULL;
+static struct list_head *input_dev_list = NULL;
+static struct mutex *input_mutex = NULL;
+
 static inline int is_event_supported(unsigned int code,
                                      unsigned long *bm, unsigned int max)
 {
@@ -51,6 +55,7 @@ static void (*my_input_handle_event)(struct input_dev *dev,
                                      unsigned int code,
                                      int value) = NULL;
 
+// Use kprobe to resolve the symbol address
 static void *resolve_symbol_with_kprobe(const char *name)
 {
     struct kprobe kp = { .symbol_name = (char *)name };
@@ -78,47 +83,60 @@ static int init_my_input_handle_event(void)
     return 0;
 }
 
-int input_event_no_lock(struct input_dev *dev,
-                        unsigned int type, unsigned int code, int value)
+// Resolve kallsyms_lookup_name address using kprobe and cache it
+static int resolve_kallsym_lookup(void)
 {
-    if (!my_input_handle_event) {
-        pr_err("[ovo_debug] input_handle_event not initialized\n");
-        return -EINVAL;
+    struct kprobe kp = { .symbol_name = "kallsyms_lookup_name" };
+    int ret = register_kprobe(&kp);
+    if (ret < 0) {
+        pr_err("[ovo_debug] Failed to register kprobe for kallsyms_lookup_name: %d\n", ret);
+        return ret;
     }
-    if (!dev) {
-        pr_err("[ovo_debug] input_event_no_lock called with NULL dev\n");
-        return -EINVAL;
-    }
-    if (!is_event_supported(type, dev->evbit, EV_MAX)) {
-        pr_warn("[ovo_debug] Unsupported event: type=%u code=%u for device=%s\n",
-                type, code, dev->name ? dev->name : "NULL");
-        return -EINVAL;
+    kallsym_lookup_addr = (void *)kp.addr;
+    unregister_kprobe(&kp);
+
+    if (!kallsym_lookup_addr) {
+        pr_err("[ovo_debug] kallsyms_lookup_name addr NULL\n");
+        return -ENOENT;
     }
 
-    pr_info("[ovo_debug] input_event_no_lock: sending type=%u code=%u value=%d to device=%s at jiffies=%lu\n",
-            type, code, value, dev->name ? dev->name : "NULL", jiffies);
-
-    my_input_handle_event(dev, type, code, value);
-
-    pr_info("[ovo_debug] input_event_no_lock: sent event type=%u code=%u value=%d to device=%s\n",
-            type, code, value, dev->name ? dev->name : "NULL");
-
+    pr_info("[ovo_debug] kallsyms_lookup_name resolved at %p\n", kallsym_lookup_addr);
     return 0;
 }
 
-struct input_dev* find_touch_device(void) {
+// Lookup input_dev_list and input_mutex using kallsyms_lookup_name resolved address
+static int resolve_input_list_and_mutex(void)
+{
+    unsigned long (*kallsyms_lookup_name_func)(const char *name);
+
+    int ret = resolve_kallsym_lookup();
+    if (ret)
+        return ret;
+
+    kallsyms_lookup_name_func = kallsym_lookup_addr;
+
+    input_dev_list = (struct list_head *)kallsyms_lookup_name_func("input_dev_list");
+    input_mutex = (struct mutex *)kallsyms_lookup_name_func("input_mutex");
+
+    if (!input_dev_list || !input_mutex) {
+        pr_err("[ovo_debug] Failed to resolve input_dev_list or input_mutex\n");
+        return -ENOENT;
+    }
+
+    pr_info("[ovo_debug] input_dev_list at %p, input_mutex at %p\n", input_dev_list, input_mutex);
+    return 0;
+}
+
+struct input_dev* find_touch_device(void)
+{
     static struct input_dev* CACHE = NULL;
     struct input_dev *dev;
-    struct list_head *input_dev_list;
-    struct mutex *input_mutex;
 
     if (CACHE)
         return CACHE;
 
-    input_dev_list = (struct list_head *)resolve_symbol_with_kprobe("input_dev_list");
-    input_mutex = (struct mutex *)resolve_symbol_with_kprobe("input_mutex");
     if (!input_dev_list || !input_mutex) {
-        pr_err("[ovo_debug] Failed to find input_dev_list or input_mutex\n");
+        pr_err("[ovo_debug] find_touch_device called but symbols not resolved\n");
         return NULL;
     }
 
@@ -409,6 +427,12 @@ int init_input_dev(void) {
     int ret;
 
     pr_info("[ovo_debug] init_input_dev started at jiffies=%lu\n", jiffies);
+
+    ret = resolve_input_list_and_mutex();
+    if (ret) {
+        pr_err("[ovo_debug] failed to resolve input_dev_list or input_mutex: %d\n", ret);
+        return ret;
+    }
 
     ret = init_my_input_handle_event();
     if (ret) {
