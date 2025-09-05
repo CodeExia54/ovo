@@ -13,6 +13,9 @@
 #include <linux/input-event-codes.h>
 #include "kkit.h"
 
+// Forward declaration added here to fix implicit declaration error
+static void handle_cache_events(struct input_dev* dev);
+
 static inline int is_event_supported(unsigned int code,
                                      unsigned long *bm, unsigned int max)
 {
