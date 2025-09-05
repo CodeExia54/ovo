@@ -43,13 +43,11 @@ int get_last_driver_slot(struct input_dev* dev) {
     return is_new_slot ? new_slot : slot;
 }
 
-// Function pointer for internal input_handle_event
 static void (*my_input_handle_event)(struct input_dev *dev,
                                      unsigned int type,
                                      unsigned int code,
                                      int value) = NULL;
 
-// Kprobe-based resolver for unexported symbols
 static void *resolve_symbol_with_kprobe(const char *name)
 {
     struct kprobe kp = { .symbol_name = (char *)name };
@@ -64,7 +62,6 @@ static void *resolve_symbol_with_kprobe(const char *name)
     return addr;
 }
 
-// Initialize my_input_handle_event once at module init
 static int init_my_input_handle_event(void)
 {
     my_input_handle_event =
@@ -78,7 +75,6 @@ static int init_my_input_handle_event(void)
     return 0;
 }
 
-// Safe wrapper replacing direct calls
 int input_event_no_lock(struct input_dev *dev,
                         unsigned int type, unsigned int code, int value)
 {
@@ -143,10 +139,6 @@ struct input_dev* find_touch_device(void) {
 static struct event_pool *pool = NULL;
 struct event_pool *get_event_pool(void) { return pool; }
 
-/* Synthetic tracking id counter: kernel will use these to avoid calling non-existent helpers.
- * Start at a high value to minimize collision with hardware-generated ids. */
-static int synthetic_trkid = 1000000;
-
 int input_event_cache(unsigned int type, unsigned int code, int value, int lock)
 {
     if (!my_input_handle_event) {
@@ -163,9 +155,6 @@ int input_event_cache(unsigned int type, unsigned int code, int value, int lock)
             type, code, value, jiffies);
 
     unsigned long flags;
-    if (lock)
-        pr_info("[ovo_debug] input_event_cache: acquiring pool lock at jiffies=%lu\n", jiffies);
-
     if (lock)
         spin_lock_irqsave(&pool->event_lock, flags);
 
@@ -184,12 +173,21 @@ int input_event_cache(unsigned int type, unsigned int code, int value, int lock)
         pr_info("[ovo_debug] input_event_cache: released pool lock at jiffies=%lu\n", jiffies);
     }
 
+    // Immediately flush after caching to reduce delay
+    struct input_dev *dev = find_touch_device();
+    if (dev) {
+        pr_info("[ovo_debug] input_event_cache: triggering immediate flush at jiffies=%lu\n", jiffies);
+        handle_cache_events(dev);
+    } else {
+        pr_warn("[ovo_debug] input_event_cache: device not found for flush at jiffies=%lu\n", jiffies);
+    }
+
     return 0;
 }
 
 int input_mt_report_slot_state_cache(unsigned int tool_type, bool active, int lock)
 {
-    int id;   // Declare id here to fix undeclared usage
+    int id;
 
     if (!active) {
         input_event_cache(EV_ABS, ABS_MT_TRACKING_ID, -1, lock);
@@ -202,6 +200,7 @@ int input_mt_report_slot_state_cache(unsigned int tool_type, bool active, int lo
         pr_err("[ovo_debug] input_mt_report_slot_state_cache: no device found\n");
         return -EINVAL;
     }
+
     struct input_mt *mt = dev->mt;
     if (!mt) {
         pr_err("[ovo_debug] input_mt_report_slot_state_cache: dev->mt NULL\n");
@@ -216,10 +215,8 @@ int input_mt_report_slot_state_cache(unsigned int tool_type, bool active, int lo
     struct input_mt_slot *slot = &mt->slots[mt->slot];
     id = input_mt_get_value(slot, ABS_MT_TRACKING_ID);
     if (id < 0) {
-        /* replaced input_mt_new_trkid with module counter */
-        synthetic_trkid++;
-        id = synthetic_trkid;
-        pr_info("[ovo_debug] input_mt_report_slot_state_cache: kernel generated tracking id %d at slot %d, jiffies=%lu\n",
+        id = input_mt_new_trkid(mt);
+        pr_info("[ovo_debug] input_mt_report_slot_state_cache: new tracking id %d at slot %d, jiffies=%lu\n",
                 id, mt->slot, jiffies);
     }
 
@@ -250,7 +247,7 @@ static void handle_cache_events(struct input_dev* dev) {
     struct input_mt *mt = dev->mt;
     struct input_mt_slot *slot;
     unsigned long flags1, flags2;
-    int id = 0;  // Declare id here
+    int id, i;
 
     pr_info("[ovo_debug] handle_cache_events enter for dev=%s at jiffies=%lu\n", dev ? dev->name : "NULL", jiffies);
 
@@ -278,169 +275,32 @@ static void handle_cache_events(struct input_dev* dev) {
         return;
     }
 
-    pr_info("[ovo_debug] handle_cache_events: processing %u event(s) on device %s slot=%d at jiffies=%lu\n",
+    pr_info("[ovo_debug] handle_cache_events: processing %u events on device %s slot=%d at jiffies=%lu\n",
             pool->size, dev->name, mt->slot, jiffies);
 
     spin_lock_irqsave(&dev->event_lock, flags1);
 
-    /*
-     * Strategy:
-     * - Track the current ABS_MT_SLOT value while iterating events.
-     * - If userspace did not provide ABS_MT_TRACKING_ID for a slot and the slot is currently free,
-     *   allocate a tracking id (synthetic_trkid++) and inject it before position/pressure events.
-     * - If userspace requested a slot that is already occupied by hardware, remap to a free slot.
-     * - After processing all events, automatically release (ABS_MT_TRACKING_ID = -1) only those
-     *   tracking IDs that the kernel allocated in this frame.
-     */
-
-    int current_slot = -1;
-    int num_slots = mt->num_slots;
-    bool *kernel_allocated = NULL; /* which slots got a kernel allocated tracking id this frame */
-    int *alloc_id = NULL;          /* store the id allocated for each slot (if any) */
-
-    /* Allocate per-frame bookkeeping arrays with GFP_ATOMIC since kprobe context may be atomic */
-    kernel_allocated = kcalloc(num_slots, sizeof(bool), GFP_ATOMIC);
-    alloc_id = kcalloc(num_slots, sizeof(int), GFP_ATOMIC);
-    if (!kernel_allocated || !alloc_id) {
-        pr_err("[ovo_debug] handle_cache_events: allocation failed for bookkeeping arrays\n");
-        kfree(kernel_allocated);
-        kfree(alloc_id);
-        spin_unlock_irqrestore(&dev->event_lock, flags1);
-        pool->size = 0;
-        spin_unlock_irqrestore(&pool->event_lock, flags2);
-        return;
-    }
-
-    int i;
     for (i = 0; i < pool->size; ++i) {
         struct ovo_touch_event event = pool->events[i];
 
-        /* Update current_slot when ABS_MT_SLOT seen */
-        if (event.type == EV_ABS && event.code == ABS_MT_SLOT) {
-            int requested_slot = event.value;
-            current_slot = requested_slot;
-
-            /* If requested slot in range, check occupancy and remap if occupied */
-            if (requested_slot >= 0 && requested_slot < num_slots) {
-                int existing = input_mt_get_value(&mt->slots[requested_slot], ABS_MT_TRACKING_ID);
-                if (existing >= 0) {
-                    /* requested slot already occupied by hardware or other active touch -> find free slot */
-                    int free_slot = -1;
-                    int s;
-                    for (s = 0; s < num_slots; ++s) {
-                        int v = input_mt_get_value(&mt->slots[s], ABS_MT_TRACKING_ID);
-                        if (v < 0 && !kernel_allocated[s]) {
-                            free_slot = s;
-                            break;
-                        }
-                    }
-                    if (free_slot >= 0) {
-                        pr_info("[ovo_debug] handle_cache_events: remapping requested slot %d -> free slot %d because requested occupied (existing id=%d)\n",
-                                requested_slot, free_slot, existing);
-                        current_slot = free_slot;
-                    } else {
-                        /* No free slot found: choose requested_slot but warn (risk of stomping). */
-                        pr_warn("[ovo_debug] handle_cache_events: no free slot found to remap requested slot %d; using it anyway (existing id=%d)\n",
-                                requested_slot, existing);
-                        current_slot = requested_slot;
-                    }
-                } else {
-                    /* requested slot is free; OK to use as-is */
-                    pr_info("[ovo_debug] handle_cache_events: using requested slot %d (free)\n", requested_slot);
-                }
-            } else {
-                pr_err("[ovo_debug] handle_cache_events: ABS_MT_SLOT value %d out of range\n", requested_slot);
-            }
-
-            /* Emit the (possibly remapped) ABS_MT_SLOT event */
-            pr_info("[ovo_debug] handle_cache_events: emitting ABS_MT_SLOT=%d (event #%d)\n", current_slot, i);
-            input_event_no_lock(dev, EV_ABS, ABS_MT_SLOT, current_slot);
-            continue;
-        }
-
-        /* If event is TRACKING_ID and positive, user provided it: mark alloc arrays accordingly (do not auto-release) */
-        if (event.type == EV_ABS && event.code == ABS_MT_TRACKING_ID) {
-            pr_info("[ovo_debug] handle_cache_events: saw ABS_MT_TRACKING_ID=%d for current_slot=%d (event #%d)\n",
-                    event.value, current_slot, i);
-            /* emit whatever userspace provided */
-            input_event_no_lock(dev, EV_ABS, ABS_MT_TRACKING_ID, event.value);
-            /* If userspace provided a positive id, we should NOT auto-release it later */
-            if (current_slot >= 0 && current_slot < num_slots && event.value >= 0) {
-                kernel_allocated[current_slot] = false;
-                alloc_id[current_slot] = event.value;
-            } else if (current_slot >= 0 && current_slot < num_slots && event.value < 0) {
-                /* userspace explicitly released the slot; ensure we don't auto-release */
-                kernel_allocated[current_slot] = false;
-                alloc_id[current_slot] = -1;
-            }
-            continue;
-        }
-
-        /* For position, pressure, tool_type, etc:
-         * If current slot has no tracking id and the userspace hasn't provided one earlier in this frame,
-         * allocate one now and emit it.
-         */
         if (event.type == EV_ABS &&
-            (event.code == ABS_MT_POSITION_X || event.code == ABS_MT_POSITION_Y ||
-             event.code == ABS_MT_PRESSURE || event.code == ABS_MT_TOOL_TYPE)) {
-
-            if (current_slot >= 0 && current_slot < num_slots) {
-                int existing = input_mt_get_value(&mt->slots[current_slot], ABS_MT_TRACKING_ID);
-                if (existing < 0 && !kernel_allocated[current_slot] && alloc_id[current_slot] <= 0) {
-                    /*
-                     * No tracking id currently for this slot and userspace didn't give one earlier in this frame:
-                     * allocate and emit a new tracking id now using synthetic_trkid.
-                     */
-                    synthetic_trkid++;
-                    int newtrkid = synthetic_trkid;
-                    alloc_id[current_slot] = newtrkid;
-                    kernel_allocated[current_slot] = true;
-                    pr_info("[ovo_debug] handle_cache_events: kernel allocated new synthetic tracking id %d for slot %d at event #%d\n",
-                            newtrkid, current_slot, i);
-                    /* Emit the tracking id for this slot before position/pressure */
-                    input_event_no_lock(dev, EV_ABS, ABS_MT_TRACKING_ID, newtrkid);
-                    /* Emit a tool type if driver expects it */
-                    input_event_no_lock(dev, EV_ABS, ABS_MT_TOOL_TYPE, MT_TOOL_FINGER);
-                } else {
-                    pr_info("[ovo_debug] handle_cache_events: slot %d already has existing tracking id %d or was allocated earlier in this frame\n",
-                            current_slot, existing);
-                }
-            } else {
-                pr_warn("[ovo_debug] handle_cache_events: position/pressure event with no current_slot (event #%d)\n", i);
-            }
-
-            /* Emit the original position/pressure/tool event */
-            pr_info("[ovo_debug] handle_cache_events: emitting event #%d: type=%u code=%u value=%d\n",
-                    i, event.type, event.code, event.value);
-            input_event_no_lock(dev, event.type, event.code, event.value);
-            continue;
+            event.code == ABS_MT_TRACKING_ID &&
+            event.value == -114514) {
+            id = input_mt_get_value(slot, ABS_MT_TRACKING_ID);
+            if (id < 0)
+                id = input_mt_new_trkid(mt);
+            event.value = id;
+            pr_info("[ovo_debug] handle_cache_events: replaced -114514 with new tracking id %d at jiffies=%lu\n", id, jiffies);
         }
 
-        /* Other events (EV_KEY, EV_SYN variants etc.) just forward */
-        pr_info("[ovo_debug] handle_cache_events: emitting other event #%d: type=%u code=%u value=%d\n",
-                i, event.type, event.code, event.value);
-        input_event_no_lock(dev, event.type, event.code, event.value);
+        pr_info("[ovo_debug] handle_cache_events: sending event #%d: type=%u code=%u value=%d at jiffies=%lu\n",
+                i, event.type, event.code, event.value, jiffies);
+
+        int ret = input_event_no_lock(dev, event.type, event.code, event.value);
+        if (ret != 0)
+            pr_err("[ovo_debug] handle_cache_events: input_event_no_lock returned %d for event #%d\n", ret, i);
     }
 
-    /*
-     * After iterating events: auto-release any slots for which we allocated a tracking id this frame.
-     * This turns a single press frame into press+immediate-release (a tap).
-     * We only auto-release those IDs that kernel_allocated[] is true.
-     */
-    int s;
-    for (s = 0; s < num_slots; ++s) {
-        if (kernel_allocated[s]) {
-            int allocated_trkid = alloc_id[s];
-            pr_info("[ovo_debug] handle_cache_events: auto-releasing slot %d synthetic tracking id %d\n", s, allocated_trkid);
-            /* ensure slot selection is emitted */
-            input_event_no_lock(dev, EV_ABS, ABS_MT_SLOT, s);
-            /* send tracking id = -1 to release */
-            input_event_no_lock(dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
-        }
-    }
-
-    /* Synchronize MT frame properly for protocol B consumers, then send SYN_REPORT */
-    input_mt_sync_frame(dev); /* keep MT bookkeeping consistent */
     pr_info("[ovo_debug] handle_cache_events: sending EV_SYN (SYN_REPORT) at jiffies=%lu\n", jiffies);
     int ret_sync = input_event_no_lock(dev, EV_SYN, SYN_REPORT, 0);
     if (ret_sync != 0)
@@ -448,15 +308,11 @@ static void handle_cache_events(struct input_dev* dev) {
     else
         pr_info("[ovo_debug] handle_cache_events: EV_SYN sent successfully at jiffies=%lu\n", jiffies);
 
-    /* cleanup per-frame bookkeeping */
-    kfree(kernel_allocated);
-    kfree(alloc_id);
-
     spin_unlock_irqrestore(&dev->event_lock, flags1);
     pool->size = 0;
     spin_unlock_irqrestore(&pool->event_lock, flags2);
 
-    pr_info("[ovo_debug] handle_cache_events exit for device %s at jiffies=%lu\n", dev->name, jiffies);
+    pr_info("[ovo_debug] handle_cache_events exit for dev=%s at jiffies=%lu\n", dev->name, jiffies);
 }
 
 static int input_handle_event_handler_pre(struct kprobe *p,
@@ -474,16 +330,15 @@ static int input_handle_event_handler_pre(struct kprobe *p,
     pr_info("[ovo_debug_kprobe] input_event fired: dev=%s type=%u code=%u value=%d at jiffies=%lu\n",
             dev->name, type, code, value, jiffies);
 
-    if (type == EV_ABS && (code == ABS_MT_POSITION_X || code == ABS_MT_POSITION_Y || code == ABS_MT_TRACKING_ID)) {
+    if (type == EV_ABS &&
+        (code == ABS_MT_POSITION_X || code == ABS_MT_POSITION_Y || code == ABS_MT_TRACKING_ID)) {
         pr_info("[ovo_debug_user] Userspace touch event seen: type=%u code=%u value=%d at jiffies=%lu\n",
                 type, code, value, jiffies);
     }
 
-    if (type != EV_SYN) {
+    if (type != EV_SYN)
         return 0;
-    }
 
-    // Flush cached events on sync
     handle_cache_events(dev);
 
     return 0;
@@ -505,25 +360,30 @@ static int input_handle_event_handler2_pre(struct kprobe *p,
     pr_info("[ovo_debug_kprobe] input_inject_event fired: dev=%s type=%u code=%u value=%d at jiffies=%lu\n",
             dev->name, type, code, value, jiffies);
 
-    if (type == EV_ABS && (code == ABS_MT_POSITION_X || code == ABS_MT_POSITION_Y || code == ABS_MT_TRACKING_ID)) {
+    if (type == EV_ABS &&
+        (code == ABS_MT_POSITION_X || code == ABS_MT_POSITION_Y || code == ABS_MT_TRACKING_ID)) {
         pr_info("[ovo_debug_user] Userspace injected event via input_inject_event: type=%u code=%u value=%d at jiffies=%lu\n",
                 type, code, value, jiffies);
     }
 
-    if (type != EV_SYN) {
+    if (type != EV_SYN)
         return 0;
-    }
 
     handle_cache_events(dev);
 
     return 0;
 }
 
+// Optional: Hook input_mt_sync_frame if you want to debug or flush on frame sync
 static int input_mt_sync_frame_pre(struct kprobe *p, struct pt_regs *regs) {
     struct input_dev* dev = (struct input_dev*)regs->regs[0];
     if(!dev) {
         return 0;
     }
+
+    // Uncomment to flush cache on this sync event if desired
+    // pr_info("[ovo_debug] input_mt_sync_frame called for dev=%s at jiffies=%lu\n", dev->name, jiffies);
+    // handle_cache_events(dev);
     return 0;
 }
 
