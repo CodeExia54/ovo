@@ -58,6 +58,8 @@ static void *resolve_symbol_with_kprobe(const char *name)
     if (ret == 0) {
         addr = (void *)kp.addr;
         unregister_kprobe(&kp);
+    } else {
+        pr_err("[ovo_debug] resolve_symbol_with_kprobe failed for %s, ret = %d\n", name, ret);
     }
     return addr;
 }
@@ -88,11 +90,15 @@ int input_event_no_lock(struct input_dev *dev,
         pr_err("[ovo_debug] input_event_no_lock called with NULL dev\n");
         return -EINVAL;
     }
-    if (is_event_supported(type, dev->evbit, EV_MAX)) {
-        pr_info("[ovo_debug] input_event_no_lock: sending type=%u code=%u value=%d to device=%s\n",
-                type, code, value, dev->name ? dev->name : "NULL");
-        my_input_handle_event(dev, type, code, value);
+    if (!is_event_supported(type, dev->evbit, EV_MAX)) {
+        pr_warn("[ovo_debug] Unsupported event: type=%u code=%u for device=%s\n",
+                type, code, dev->name ? dev->name : "NULL");
+        return -EINVAL;
     }
+
+    pr_info("[ovo_debug] input_event_no_lock: sending type=%u code=%u value=%d to device=%s\n",
+            type, code, value, dev->name ? dev->name : "NULL");
+    my_input_handle_event(dev, type, code, value);
     return 0;
 }
 
@@ -176,13 +182,23 @@ int input_mt_report_slot_state_cache(unsigned int tool_type, bool active, int lo
     struct input_mt_slot *slot;
     int id;
 
-    if (!mt || mt->slot < 0 || mt->slot > mt->num_slots)
-        return -1;
+    if (!dev) {
+        pr_err("[ovo_debug] input_mt_report_slot_state_cache: no device found\n");
+        return -EINVAL;
+    }
+
+    if (!mt || mt->slot < 0 || mt->slot >= mt->num_slots) {
+        pr_err("[ovo_debug] input_mt_report_slot_state_cache invalid mt or slot, dev=%s\n",
+               dev->name ? dev->name : "NULL");
+        return -EINVAL;
+    }
 
     slot = &mt->slots[mt->slot];
     id   = input_mt_get_value(slot, ABS_MT_TRACKING_ID);
-    if (id < 0)
+    if (id < 0) {
         id = input_mt_new_trkid(mt);
+        pr_info("[ovo_debug] New tracking id %d assigned\n", id);
+    }
 
     input_event_cache(EV_ABS, ABS_MT_TRACKING_ID, id, lock);
     input_event_cache(EV_ABS, ABS_MT_TOOL_TYPE, tool_type, lock);
@@ -207,13 +223,27 @@ static void handle_cache_events(struct input_dev* dev) {
     unsigned long flags1, flags2;
     int id;
 
-    if (!mt || mt->slot < 0 || mt->slot > mt->num_slots) {
-        pr_err("[ovo_debug] handle_cache_events invalid mt or slot, dev=%s\n",
-               dev->name ? dev->name : "NULL");
+    pr_info("[ovo_debug] handle_cache_events enter for dev:%s\n", dev ? dev->name : "NULL");
+
+    if (!dev) {
+        pr_err("[ovo_debug] handle_cache_events: dev is NULL\n");
+        return;
+    }
+
+    if (!mt) {
+        pr_err("[ovo_debug] handle_cache_events: dev->mt is NULL for device %s\n", dev->name);
+        return;
+    }
+
+    if (mt->slot < 0 || mt->slot >= mt->num_slots) {
+        pr_err("[ovo_debug] handle_cache_events: invalid slot (%d) for device %s\n", mt->slot, dev->name);
         return;
     }
 
     slot = &mt->slots[mt->slot];
+    pr_info("[ovo_debug] handle_cache_events: processing %u events on device %s with slot %d\n",
+            pool->size, dev->name, mt->slot);
+
     spin_lock_irqsave(&pool->event_lock, flags2);
     if (pool->size == 0) {
         pr_info("[ovo_debug] handle_cache_events: empty event pool\n");
@@ -222,20 +252,18 @@ static void handle_cache_events(struct input_dev* dev) {
     }
 
     spin_lock_irqsave(&dev->event_lock, flags1);
-    pr_info("[ovo_debug] handle_cache_events: processing %u events on device %s\n",
-            pool->size, dev->name ? dev->name : "NULL");
 
-    int i;
-    for (i = 0; i < pool->size; ++i) {
+    for (int i = 0; i < pool->size; ++i) {
         struct ovo_touch_event event = pool->events[i];
-        if (event.type == EV_ABS &&
-            event.code == ABS_MT_TRACKING_ID &&
-            event.value == -114514) {
+
+        if (event.type == EV_ABS && event.code == ABS_MT_TRACKING_ID && event.value == -114514) {
             id = input_mt_get_value(slot, ABS_MT_TRACKING_ID);
             if (id < 0)
                 id = input_mt_new_trkid(mt);
             event.value = id;
+            pr_info("[ovo_debug] handle_cache_events: replaced -114514 with new tracking id %d\n", id);
         }
+
         pr_info("[ovo_debug] handle_cache_events: sending event type=%u code=%u value=%d\n",
                 event.type, event.code, event.value);
         input_event_no_lock(dev, event.type, event.code, event.value);
@@ -243,7 +271,10 @@ static void handle_cache_events(struct input_dev* dev) {
 
     spin_unlock_irqrestore(&dev->event_lock, flags1);
     pool->size = 0;
+
     spin_unlock_irqrestore(&pool->event_lock, flags2);
+
+    pr_info("[ovo_debug] handle_cache_events exit for dev:%s\n", dev->name);
 }
 
 static int input_handle_event_handler_pre(struct kprobe *p,
@@ -259,7 +290,10 @@ static int input_handle_event_handler_pre(struct kprobe *p,
         return 0;
     }
 
-    // Only log relevant touch events
+    pr_info("[ovo_debug_kprobe] input_event fired: dev=%s type=%u code=%u value=%d\n",
+            dev->name, type, code, value);
+
+    // Only log relevant touch events for brevity
     if (type == EV_ABS &&
         (code == ABS_MT_POSITION_X || code == ABS_MT_POSITION_Y || code == ABS_MT_TRACKING_ID)) {
         pr_info("[ovo_debug_user] Userspace touch event seen: type=%u code=%u value=%d\n",
@@ -288,6 +322,9 @@ static int input_handle_event_handler2_pre(struct kprobe *p,
         return 0;
     }
 
+    pr_info("[ovo_debug_kprobe] input_inject_event fired: dev=%s type=%u code=%u value=%d\n",
+            dev->name, type, code, value);
+
     if (type == EV_ABS &&
         (code == ABS_MT_POSITION_X || code == ABS_MT_POSITION_Y || code == ABS_MT_TRACKING_ID)) {
         pr_info("[ovo_debug_user] Userspace injected event via input_inject_event: type=%u code=%u value=%d\n",
@@ -301,7 +338,6 @@ static int input_handle_event_handler2_pre(struct kprobe *p,
 
     return 0;
 }
-
 
 static struct kprobe input_event_kp = {
     .symbol_name = "input_event",
@@ -360,4 +396,3 @@ void exit_input_dev(void) {
     }
     pr_info("[ovo_debug] input dev exited and resources freed\n");
 }
-
