@@ -80,7 +80,7 @@ static struct input_dev* find_touch_device(void)
 static struct event_pool *pool = NULL;
 struct event_pool *get_event_pool(void) { return pool; }
 
-// Keep helper intact: cache immediately; we will flush coherently in handle_cache_events
+// Keep helper intact: cache immediately; handle_cache_events may flush
 int input_event_cache(unsigned int type, unsigned int code, int value, int lock)
 {
     unsigned long flags;
@@ -95,8 +95,7 @@ int input_event_cache(unsigned int type, unsigned int code, int value, int lock)
     pool->events[pool->size++] = (struct ovo_touch_event){ type, code, value };
     if (lock) spin_unlock_irqrestore(&pool->event_lock, flags);
 
-    // Respect your current behavior: try to flush right away if device known
-    // Coherency is enforced inside handle_cache_events to build a proper MT-B frame
+    // Optional immediate flush if device ready (your original behavior)
     {
         struct input_dev *dev = find_touch_device();
         if (dev) handle_cache_events(dev);
@@ -236,6 +235,7 @@ bool input_mt_report_slot_state_with_id_cache(unsigned int tool_type,
 static int input_register_device_pre(struct kprobe *p, struct pt_regs *regs)
 {
 #if defined(CONFIG_ARM64)
+    // input_register_device(struct input_dev *dev)
     struct input_dev *dev = (struct input_dev *)regs->regs;
 #else
     struct input_dev *dev = NULL;
@@ -253,9 +253,11 @@ static int input_register_device_pre(struct kprobe *p, struct pt_regs *regs)
 static int input_event_pre(struct kprobe *p, struct pt_regs *regs)
 {
 #if defined(CONFIG_ARM64)
+    // input_event(struct input_dev *dev, unsigned int type, unsigned int code, int value)
     struct input_dev* dev = (struct input_dev*)regs->regs;
-    unsigned int type = (unsigned int)regs->regs[1];
-    unsigned int code = (unsigned int)regs->regs[3];
+    unsigned int type = (unsigned int)regs->regs[6];
+    unsigned int code = (unsigned int)regs->regs[7];
+    // int value = (int)regs->regs[8]; // not needed here
 #else
     struct input_dev* dev = NULL; unsigned int type = 0, code = 0;
 #endif
@@ -272,9 +274,11 @@ static int input_event_pre(struct kprobe *p, struct pt_regs *regs)
 static int input_inject_event_pre(struct kprobe *p, struct pt_regs *regs)
 {
 #if defined(CONFIG_ARM64)
+    // input_inject_event(struct input_handle *handle, unsigned int type, unsigned int code, int value)
     struct input_handle* handle = (struct input_handle*)regs->regs;
-    unsigned int type = (unsigned int)regs->regs[1];
-    unsigned int code = (unsigned int)regs->regs[3];
+    unsigned int type = (unsigned int)regs->regs[6];
+    unsigned int code = (unsigned int)regs->regs[7];
+    // int value = (int)regs->regs[8]; // not needed here
     struct input_dev* dev = handle ? handle->dev : NULL;
 #else
     struct input_dev* dev = NULL; unsigned int type=0, code=0;
@@ -291,6 +295,7 @@ static int input_inject_event_pre(struct kprobe *p, struct pt_regs *regs)
 static int input_mt_sync_frame_pre(struct kprobe *p, struct pt_regs *regs)
 {
 #if defined(CONFIG_ARM64)
+    // input_mt_sync_frame(struct input_dev *dev)
     struct input_dev* dev = (struct input_dev*)regs->regs;
 #else
     struct input_dev* dev = NULL;
@@ -378,4 +383,3 @@ void exit_input_dev(void)
     if (pool) { kfree(pool); pool = NULL; }
     pr_info("[ovo_debug] exit_input_dev done\n");
 }
-
