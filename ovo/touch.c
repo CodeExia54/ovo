@@ -185,6 +185,8 @@ int input_event_cache(unsigned int type, unsigned int code, int value, int lock)
 
 int input_mt_report_slot_state_cache(unsigned int tool_type, bool active, int lock)
 {
+    int id;   // Declare id here to fix undeclared usage
+
     if (!active) {
         input_event_cache(EV_ABS, ABS_MT_TRACKING_ID, -1, lock);
         pr_info("[ovo_debug] input_mt_report_slot_state_cache: reporting slot inactive at jiffies=%lu\n", jiffies);
@@ -208,7 +210,7 @@ int input_mt_report_slot_state_cache(unsigned int tool_type, bool active, int lo
     }
 
     struct input_mt_slot *slot = &mt->slots[mt->slot];
-    int id = input_mt_get_value(slot, ABS_MT_TRACKING_ID);
+    id = input_mt_get_value(slot, ABS_MT_TRACKING_ID);
     if (id < 0) {
         id = input_mt_new_trkid(mt);
         pr_info("[ovo_debug] input_mt_report_slot_state_cache: new tracking id %d at slot %d, jiffies=%lu\n",
@@ -242,6 +244,7 @@ static void handle_cache_events(struct input_dev* dev) {
     struct input_mt *mt = dev->mt;
     struct input_mt_slot *slot;
     unsigned long flags1, flags2;
+    int id = 0;  // Declare id here
 
     pr_info("[ovo_debug] handle_cache_events enter for dev=%s at jiffies=%lu\n", dev ? dev->name : "NULL", jiffies);
 
@@ -273,10 +276,11 @@ static void handle_cache_events(struct input_dev* dev) {
             pool->size, dev->name, mt->slot, jiffies);
 
     spin_lock_irqsave(&dev->event_lock, flags1);
-        int i;
-        for (i = 0; i < pool->size; ++i) {
+
+    int i;
+    for (i = 0; i < pool->size; ++i) {
         struct ovo_touch_event event = pool->events[i];
-  
+
         if (event.type == EV_ABS && event.code == ABS_MT_TRACKING_ID && event.value == -114514) {
             id = input_mt_get_value(slot, ABS_MT_TRACKING_ID);
             if (id < 0)
@@ -293,7 +297,7 @@ static void handle_cache_events(struct input_dev* dev) {
             pr_err("[ovo_debug] handle_cache_events: input_event_no_lock returned %d for event #%d\n", ret, i);
     }
 
-    // Send sync event to flush frame
+    // Send EV_SYN sync event
     pr_info("[ovo_debug] handle_cache_events: sending EV_SYN (SYN_REPORT) at jiffies=%lu\n", jiffies);
     int ret_sync = input_event_no_lock(dev, EV_SYN, SYN_REPORT, 0);
     if (ret_sync != 0)
