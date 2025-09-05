@@ -225,7 +225,8 @@ static void handle_cache_events(struct input_dev* dev) {
     pr_info("[ovo_debug] handle_cache_events: processing %u events on device %s\n",
             pool->size, dev->name ? dev->name : "NULL");
 
-    for (int i = 0; i < pool->size; ++i) {
+        int i;
+        for (i = 0; i < pool->size; ++i) {
         struct ovo_touch_event event = pool->events[i];
         if (event.type == EV_ABS &&
             event.code == ABS_MT_TRACKING_ID &&
