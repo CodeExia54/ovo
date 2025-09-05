@@ -43,13 +43,11 @@ int get_last_driver_slot(struct input_dev* dev) {
     return is_new_slot ? new_slot : slot;
 }
 
-// Function pointer for internal input_handle_event
 static void (*my_input_handle_event)(struct input_dev *dev,
                                      unsigned int type,
                                      unsigned int code,
                                      int value) = NULL;
 
-// Kprobe-based resolver for unexported symbols
 static void *resolve_symbol_with_kprobe(const char *name)
 {
     struct kprobe kp = { .symbol_name = (char *)name };
@@ -64,7 +62,6 @@ static void *resolve_symbol_with_kprobe(const char *name)
     return addr;
 }
 
-// Initialize my_input_handle_event once at module init
 static int init_my_input_handle_event(void)
 {
     my_input_handle_event =
@@ -78,7 +75,6 @@ static int init_my_input_handle_event(void)
     return 0;
 }
 
-// Safe wrapper replacing direct calls
 int input_event_no_lock(struct input_dev *dev,
                         unsigned int type, unsigned int code, int value)
 {
@@ -185,7 +181,7 @@ int input_event_cache(unsigned int type, unsigned int code, int value, int lock)
 
 int input_mt_report_slot_state_cache(unsigned int tool_type, bool active, int lock)
 {
-    int id;   // Declare id here to fix undeclared usage
+    int id;
 
     if (!active) {
         input_event_cache(EV_ABS, ABS_MT_TRACKING_ID, -1, lock);
@@ -244,7 +240,7 @@ static void handle_cache_events(struct input_dev* dev) {
     struct input_mt *mt = dev->mt;
     struct input_mt_slot *slot;
     unsigned long flags1, flags2;
-    int id = 0;  // Declare id here
+    int id = 0;
 
     pr_info("[ovo_debug] handle_cache_events enter for dev=%s at jiffies=%lu\n", dev ? dev->name : "NULL", jiffies);
 
@@ -297,7 +293,7 @@ static void handle_cache_events(struct input_dev* dev) {
             pr_err("[ovo_debug] handle_cache_events: input_event_no_lock returned %d for event #%d\n", ret, i);
     }
 
-    // Send EV_SYN sync event
+    input_mt_sync_frame(dev); // NEW: sync MT slots before SYN_REPORT
     pr_info("[ovo_debug] handle_cache_events: sending EV_SYN (SYN_REPORT) at jiffies=%lu\n", jiffies);
     int ret_sync = input_event_no_lock(dev, EV_SYN, SYN_REPORT, 0);
     if (ret_sync != 0)
@@ -336,7 +332,6 @@ static int input_handle_event_handler_pre(struct kprobe *p,
         return 0;
     }
 
-    // Flush cached events on sync
     handle_cache_events(dev);
 
     return 0;
@@ -372,6 +367,14 @@ static int input_handle_event_handler2_pre(struct kprobe *p,
     return 0;
 }
 
+static int input_mt_sync_frame_pre(struct kprobe *p, struct pt_regs *regs) {
+    struct input_dev* dev = (struct input_dev*)regs->regs[0];
+    if(!dev) {
+        return 0;
+    }
+    return 0;
+}
+
 static struct kprobe input_event_kp = {
     .symbol_name = "input_event",
     .pre_handler = input_handle_event_handler_pre,
@@ -380,6 +383,11 @@ static struct kprobe input_event_kp = {
 static struct kprobe input_inject_event_kp = {
     .symbol_name = "input_inject_event",
     .pre_handler = input_handle_event_handler2_pre,
+};
+
+static struct kprobe input_mt_sync_frame_kp = {
+    .symbol_name = "input_mt_sync_frame",
+    .pre_handler = input_mt_sync_frame_pre,
 };
 
 int init_input_dev(void) {
@@ -407,11 +415,20 @@ int init_input_dev(void) {
         return ret;
     }
 
+    ret = register_kprobe(&input_mt_sync_frame_kp);
+    pr_info("[ovo_debug] input_mt_sync_frame_kp registration result: %d at jiffies=%lu\n", ret, jiffies);
+    if (ret) {
+        unregister_kprobe(&input_event_kp);
+        unregister_kprobe(&input_inject_event_kp);
+        return ret;
+    }
+
     pool = kvmalloc(sizeof(*pool), GFP_KERNEL);
     if (!pool) {
         pr_err("[ovo_debug] failed to allocate event pool at jiffies=%lu\n", jiffies);
         unregister_kprobe(&input_event_kp);
         unregister_kprobe(&input_inject_event_kp);
+        unregister_kprobe(&input_mt_sync_frame_kp);
         return -ENOMEM;
     }
     pool->size = 0;
@@ -425,15 +442,4 @@ int init_input_dev(void) {
 }
 
 void exit_input_dev(void) {
-    pr_info("[ovo_debug] exit_input_dev start at jiffies=%lu\n", jiffies);
-
-    unregister_kprobe(&input_event_kp);
-    unregister_kprobe(&input_inject_event_kp);
-
-    if (pool) {
-        kfree(pool);
-        pool = NULL;
-    }
-
-    pr_info("[ovo_debug] input_dev exited and resources freed at jiffies=%lu\n", jiffies);
-}
+    pr_info("[ovo_debug] exit
