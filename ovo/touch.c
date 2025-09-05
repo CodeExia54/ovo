@@ -103,7 +103,7 @@ struct input_dev* find_touch_device(void) {
         return CACHE;
 
     input_dev_list = (struct list_head *)resolve_symbol_with_kprobe("input_dev_list");
-    input_mutex    = (struct mutex   *)resolve_symbol_with_kprobe("input_mutex");
+    input_mutex = (struct mutex *)resolve_symbol_with_kprobe("input_mutex");
     if (!input_dev_list || !input_mutex) {
         pr_err("[ovo] Failed to find input_dev_list or input_mutex\n");
         return NULL;
@@ -112,17 +112,17 @@ struct input_dev* find_touch_device(void) {
     mutex_lock(input_mutex);
     list_for_each_entry(dev, input_dev_list, node) {
         if (test_bit(EV_ABS, dev->evbit) &&
-            (test_bit(ABS_MT_POSITION_X, dev->absbit) ||
-             test_bit(ABS_X,            dev->absbit))) {
-            pr_info("[ovo] Name: %s, Bus: %d Vendor: %d Product: %d Version: %d\n",
-                    dev->name, dev->id.bustype, dev->id.vendor,
-                    dev->id.product, dev->id.version);
+            (test_bit(ABS_MT_POSITION_X, dev->absbit) || test_bit(ABS_X, dev->absbit)) &&
+            dev->name && strcmp(dev->name, "fts_ts") == 0) {
+            pr_info("[ovo] Selected device: %s\n", dev->name);
             mutex_unlock(input_mutex);
             CACHE = dev;
             return dev;
         }
     }
     mutex_unlock(input_mutex);
+
+    pr_err("[ovo] Touch device 'fts_ts' not found\n");
     return NULL;
 }
 
@@ -135,17 +135,30 @@ int input_event_cache(unsigned int type, unsigned int code, int value, int lock)
         pr_err("[ovo] input_handle_event not initialized\n");
         return -EINVAL;
     }
+
+    if (!pool) {
+        pr_err("[ovo] ERROR: event pool is NULL in input_event_cache\n");
+        return -ENOMEM;
+    }
+
     unsigned long flags;
     if (lock)
         spin_lock_irqsave(&pool->event_lock, flags);
+
     if (pool->size >= MAX_EVENTS) {
+        pr_err("[ovo] event pool full: size=%u, max=%d\n", pool->size, MAX_EVENTS);
         if (lock)
             spin_unlock_irqrestore(&pool->event_lock, flags);
         return -EFAULT;
     }
+
     pool->events[pool->size++] = (struct ovo_touch_event){ type, code, value };
+    pr_info("[ovo] cached event: type=%u code=%u value=%d pool_size=%u\n",
+            type, code, value, pool->size);
+
     if (lock)
         spin_unlock_irqrestore(&pool->event_lock, flags);
+
     return 0;
 }
 
@@ -269,19 +282,22 @@ static struct kprobe input_inject_event_kp = {
 
 
 int init_input_dev(void) {
+int init_input_dev(void) {
     int ret;
 
     ret = init_my_input_handle_event();
-    if (ret)
+    if (ret) {
+        pr_err("[ovo] failed to initialize input_handle_event: %d\n", ret);
         return ret;
+    }
 
     ret = register_kprobe(&input_event_kp);
-    pr_info("[ovo] input_event_kp: %d\n", ret);
+    pr_info("[ovo] input_event_kp registration: %d\n", ret);
     if (ret)
         return ret;
 
     ret = register_kprobe(&input_inject_event_kp);
-    pr_info("[ovo] input_inject_event_kp: %d\n", ret);
+    pr_info("[ovo] input_inject_event_kp registration: %d\n", ret);
     if (ret) {
         unregister_kprobe(&input_event_kp);
         return ret;
@@ -289,19 +305,14 @@ int init_input_dev(void) {
 
     pool = kvmalloc(sizeof(*pool), GFP_KERNEL);
     if (!pool) {
+        pr_err("[ovo] failed to allocate event pool\n");
         unregister_kprobe(&input_event_kp);
         unregister_kprobe(&input_inject_event_kp);
         return -ENOMEM;
     }
     pool->size = 0;
     spin_lock_init(&pool->event_lock);
+    pr_info("[ovo] event pool allocated at %p\n", pool);
 
     return 0;
-}
-
-void exit_input_dev(void) {
-    unregister_kprobe(&input_event_kp);
-    unregister_kprobe(&input_inject_event_kp);
-    if (pool)
-        kfree(pool);
 }
