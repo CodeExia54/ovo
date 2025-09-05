@@ -242,7 +242,6 @@ static void handle_cache_events(struct input_dev* dev) {
     struct input_mt *mt = dev->mt;
     struct input_mt_slot *slot;
     unsigned long flags1, flags2;
-    int id, i;
 
     pr_info("[ovo_debug] handle_cache_events enter for dev=%s at jiffies=%lu\n", dev ? dev->name : "NULL", jiffies);
 
