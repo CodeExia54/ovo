@@ -16,6 +16,11 @@
 // Forward declaration
 static void handle_cache_events(struct input_dev* dev);
 
+// =============== Module params ===============
+static char *touch_name = "fts_ts";
+module_param(touch_name, charp, 0644);
+MODULE_PARM_DESC(touch_name, "Target input device name");
+
 // =============== Global state (no kallsyms, kprobe-only) ===============
 static struct input_dev *g_touch_dev;   // cached fts_ts once discovered via kprobes
 
@@ -71,7 +76,8 @@ int input_event_no_lock(struct input_dev *dev,
 }
 
 // =============== Device discovery without kallsyms ===============
-static struct input_dev* find_touch_device(void)
+// Public to match touch.h declaration
+struct input_dev* find_touch_device(void)
 {
     return g_touch_dev; // set by kprobes below
 }
@@ -80,7 +86,7 @@ static struct input_dev* find_touch_device(void)
 static struct event_pool *pool = NULL;
 struct event_pool *get_event_pool(void) { return pool; }
 
-// Keep helper intact: cache immediately; handle_cache_events may flush
+// Cache events; handle_cache_events may flush (kprobes also trigger on EV_SYN)
 int input_event_cache(unsigned int type, unsigned int code, int value, int lock)
 {
     unsigned long flags;
@@ -95,12 +101,11 @@ int input_event_cache(unsigned int type, unsigned int code, int value, int lock)
     pool->events[pool->size++] = (struct ovo_touch_event){ type, code, value };
     if (lock) spin_unlock_irqrestore(&pool->event_lock, flags);
 
-    // Optional immediate flush if device ready (your original behavior)
+    // Optional immediate flush if device ready (retains original behavior)
     {
         struct input_dev *dev = find_touch_device();
         if (dev) handle_cache_events(dev);
     }
-
     return 0;
 }
 
@@ -147,7 +152,7 @@ static void handle_cache_events(struct input_dev* dev)
 
     spin_lock_irqsave(&dev->event_lock, flags_dev);
 
-    // Try to start with current device slot
+    // Start with current device slot if available
     cur_slot = (dev->absinfo && dev->absinfo[ABS_MT_SLOT].value >= 0)
                ? dev->absinfo[ABS_MT_SLOT].value : 0;
 
@@ -241,7 +246,7 @@ static int input_register_device_pre(struct kprobe *p, struct pt_regs *regs)
     struct input_dev *dev = NULL;
 #endif
     if (!dev || g_touch_dev) return 0;
-    if (dev->name && strcmp(dev->name, "fts_ts") == 0 &&
+    if (dev->name && strcmp(dev->name, touch_name) == 0 &&
         test_bit(EV_ABS, dev->evbit) && test_bit(ABS_MT_POSITION_X, dev->absbit)) {
         g_touch_dev = dev;
         pr_info("[ovo_debug] cached touch dev via input_register_device: %s\n", dev->name);
@@ -255,13 +260,12 @@ static int input_event_pre(struct kprobe *p, struct pt_regs *regs)
 #if defined(CONFIG_ARM64)
     // input_event(struct input_dev *dev, unsigned int type, unsigned int code, int value)
     struct input_dev* dev = (struct input_dev*)regs->regs;
-    unsigned int type = (unsigned int)regs->regs[6];
-    unsigned int code = (unsigned int)regs->regs[7];
-    // int value = (int)regs->regs[8]; // not needed here
+    unsigned int type = (unsigned int)regs->regs[4];
+    unsigned int code = (unsigned int)regs->regs[5];
 #else
     struct input_dev* dev = NULL; unsigned int type = 0, code = 0;
 #endif
-    if (dev && !g_touch_dev && dev->name && strcmp(dev->name, "fts_ts") == 0) {
+    if (dev && !g_touch_dev && dev->name && strcmp(dev->name, touch_name) == 0) {
         g_touch_dev = dev;
         pr_info("[ovo_debug] cached touch dev via input_event: %s\n", dev->name);
     }
@@ -276,14 +280,13 @@ static int input_inject_event_pre(struct kprobe *p, struct pt_regs *regs)
 #if defined(CONFIG_ARM64)
     // input_inject_event(struct input_handle *handle, unsigned int type, unsigned int code, int value)
     struct input_handle* handle = (struct input_handle*)regs->regs;
-    unsigned int type = (unsigned int)regs->regs[6];
-    unsigned int code = (unsigned int)regs->regs[7];
-    // int value = (int)regs->regs[8]; // not needed here
+    unsigned int type = (unsigned int)regs->regs[4];
+    unsigned int code = (unsigned int)regs->regs[5];
     struct input_dev* dev = handle ? handle->dev : NULL;
 #else
     struct input_dev* dev = NULL; unsigned int type=0, code=0;
 #endif
-    if (dev && !g_touch_dev && dev->name && strcmp(dev->name, "fts_ts") == 0) {
+    if (dev && !g_touch_dev && dev->name && strcmp(dev->name, touch_name) == 0) {
         g_touch_dev = dev;
         pr_info("[ovo_debug] cached touch dev via input_inject_event: %s\n", dev->name);
     }
