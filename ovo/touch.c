@@ -66,13 +66,13 @@ static inline int is_event_supported(unsigned int code,
     return code <= max && test_bit(code, bm);
 }
 
-static int input_event_no_lock(struct input_dev *dev,
-                               unsigned int type, unsigned int code, int value)
+int input_event_no_lock(struct input_dev *dev,
+                        unsigned int type, unsigned int code, int value)
 {
     if (!my_input_handle_event || !dev) return -EINVAL;
     if (!is_event_supported(type, dev->evbit, EV_MAX)) return -EINVAL;
-    pr_info("[ovo_emit] dev=%s type=%u code=%u value=%d\n",
-            dev->name ? dev->name : "NULL", type, code, value);
+    pr_info("input_event_no_lock: dev=%s type=%u code=%u value=%d\n",
+         dev->name ? dev->name : "NULL", type, code, value);
     my_input_handle_event(dev, type, code, value);
     return 0;
 }
