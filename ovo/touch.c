@@ -16,7 +16,6 @@
 #include "kkit.h"
 #include <linux/kthread.h>
 #include <linux/delay.h>
-#include <linux/math64.h>  // for math
 #include <linux/sched/task.h>
 
 static struct task_struct *swipe_thread;
@@ -346,22 +345,24 @@ static int swipe_thread_fn(void *data)
         return -ENODEV;
     }
 
-    int cx = (dev->absinfo[ABS_MT_POSITION_X].minimum + dev->absinfo[ABS_MT_POSITION_X].maximum) / 2;
-    int cy = (dev->absinfo[ABS_MT_POSITION_Y].minimum + dev->absinfo[ABS_MT_POSITION_Y].maximum) / 2;
+    int min_x = dev->absinfo[ABS_MT_POSITION_X].minimum;
+    int max_x = dev->absinfo[ABS_MT_POSITION_X].maximum;
+    int cx = (dev->absinfo[ABS_MT_POSITION_Y].minimum + dev->absinfo[ABS_MT_POSITION_Y].maximum) / 2;
 
+    int slot = 0;
     int id = 0;
-    int i;
+    int x;
 
-    pr_info("[ovo_debug] swipe_thread: started\n");
+    pr_info("[ovo_debug] swipe_thread: started simple linear swipe\n");
 
     while (!kthread_should_stop()) {
-        // Touch down at center
+        // Touch down at minimum X, center Y
         spin_lock_irq(&pool->event_lock);
-        input_event_cache(EV_ABS, ABS_MT_SLOT, swipe_slot, 0);
+        input_event_cache(EV_ABS, ABS_MT_SLOT, slot, 0);
         id = input_mt_report_slot_state_cache(MT_TOOL_FINGER, true, 0);
         input_event_cache(EV_ABS, ABS_MT_TRACKING_ID, id, 0);
-        input_event_cache(EV_ABS, ABS_MT_POSITION_X, cx, 0);
-        input_event_cache(EV_ABS, ABS_MT_POSITION_Y, cy, 0);
+        input_event_cache(EV_ABS, ABS_MT_POSITION_X, min_x, 0);
+        input_event_cache(EV_ABS, ABS_MT_POSITION_Y, cx, 0);
         input_event_cache(EV_SYN, SYN_REPORT, 0, 0);
         spin_unlock_irq(&pool->event_lock);
 
@@ -369,16 +370,13 @@ static int swipe_thread_fn(void *data)
 
         msleep(100);
 
-        for (i = 0; i <= SWIPE_STEPS; i++) {
-            double angle = (double)i * 2.0 * 3.1415926535 / SWIPE_STEPS;
-            int x = cx + (int)(SWIPE_RADIUS * cos(angle));
-            int y = cy + (int)(SWIPE_RADIUS * sin(angle));
-
+        // Move from min_x to max_x on X axis
+        for (x = min_x; x <= max_x; x += 20) {  // step 20, adjust for speed
             spin_lock_irq(&pool->event_lock);
-            input_event_cache(EV_ABS, ABS_MT_SLOT, swipe_slot, 0);
+            input_event_cache(EV_ABS, ABS_MT_SLOT, slot, 0);
             input_event_cache(EV_ABS, ABS_MT_TRACKING_ID, id, 0);
             input_event_cache(EV_ABS, ABS_MT_POSITION_X, x, 0);
-            input_event_cache(EV_ABS, ABS_MT_POSITION_Y, y, 0);
+            input_event_cache(EV_ABS, ABS_MT_POSITION_Y, cx, 0);
             input_event_cache(EV_SYN, SYN_REPORT, 0, 0);
             spin_unlock_irq(&pool->event_lock);
 
@@ -392,21 +390,22 @@ static int swipe_thread_fn(void *data)
 
         // Touch up
         spin_lock_irq(&pool->event_lock);
-        input_event_cache(EV_ABS, ABS_MT_SLOT, swipe_slot, 0);
+        input_event_cache(EV_ABS, ABS_MT_SLOT, slot, 0);
         input_event_cache(EV_ABS, ABS_MT_TRACKING_ID, -1, 0);
         input_event_cache(EV_SYN, SYN_REPORT, 0, 0);
         spin_unlock_irq(&pool->event_lock);
 
         handle_cache_events(dev);
 
-        pr_info("[ovo_debug] swipe_thread: completed one circular swipe\n");
+        pr_info("[ovo_debug] swipe_thread: completed linear swipe\n");
 
-        msleep(1000);  // Pause 1 second before next swipe
+        msleep(1000);
     }
 
     pr_info("[ovo_debug] swipe_thread: exiting\n");
     return 0;
 }
+
 
 
 int init_input_dev(void)
