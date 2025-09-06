@@ -37,9 +37,8 @@
 
 static int __init ovo_init(void) {
     int ret;
+	
     //cuteBabyPleaseDontCry(); 
-    // Dump all exported kernel symbols
-    ovo_dump_all_symbols();
 
     ret = init_server();
     if (ret) {
