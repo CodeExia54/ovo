@@ -28,16 +28,20 @@ int ovo_flip_close(struct file **f, fl_owner_t id) {
     filp_close(*f, id);
     return 0;
 #else
-    static struct file* (*reserve_flip_close)(struct file **f, fl_owner_t id) = NULL;
+    static int (*reserve_flip_close)(struct file *filp, fl_owner_t id) = NULL;
+
+    if (*f == NULL) // Added NULL check to avoid null dereference
+        return 0;
 
     if (reserve_flip_close == NULL) {
-        reserve_flip_close = (struct file* (*)(struct file **f, fl_owner_t id))ovo_kallsyms_lookup_name("filp_close");
+        reserve_flip_close = (int (*)(struct file *filp, fl_owner_t id))ovo_kallsyms_lookup_name("filp_close");
         if (reserve_flip_close == NULL) {
             return -1;
         }
     }
 
-    reserve_flip_close(f, id);
+    reserve_flip_close(*f, id);
+    *f = NULL; // Clear pointer after close
     return 0;
 #endif
 }
@@ -53,11 +57,11 @@ bool is_file_exist(const char *filename) {
         return false;
     }
 
-//    // int kern_path(const char *name, unsigned int flags, struct path *path)
-//    struct path path;
-//    if (kern_path(filename, LOOKUP_FOLLOW, &path) == 0) {
-//        return true;
-//    }
+    // Commented out legacy alternative path check
+    // struct path path;
+    // if (kern_path(filename, LOOKUP_FOLLOW, &path) == 0) {
+    //     return true;
+    // }
 
     return false;
 }
@@ -76,8 +80,6 @@ unsigned long ovo_kallsyms_lookup_name(const char *symbol_name) {
             return 0;
         }
 
-        // 高版本一些地址符号不再导出，需要通过kallsyms_lookup_name获取
-        // 但是kallsyms_lookup_name也是一个不导出的内核符号，需要通过kprobe获取
         lookup_name = (kallsyms_lookup_name_t) kp.addr;
         unregister_kprobe(&kp);
     }
@@ -88,9 +90,7 @@ unsigned long ovo_kallsyms_lookup_name(const char *symbol_name) {
 }
 
 unsigned long *ovo_find_syscall_table(void) {
-    unsigned long *syscall_table;
-    syscall_table = (unsigned long*)ovo_kallsyms_lookup_name("sys_call_table");
-    return syscall_table;
+    return (unsigned long*)ovo_kallsyms_lookup_name("sys_call_table");
 }
 
 int mark_pid_root(pid_t pid) {
@@ -98,15 +98,11 @@ int mark_pid_root(pid_t pid) {
 
     struct pid * pid_struct;
     struct task_struct *task;
-    kuid_t kuid;
-    kgid_t kgid;
+    kuid_t kuid = KUIDT_INIT(0);
+    kgid_t kgid = KGIDT_INIT(0);
     struct cred *new_cred;
 
-    kuid = KUIDT_INIT(0);
-    kgid = KGIDT_INIT(0);
-
     pid_struct = find_get_pid(pid);
-
     task = pid_task(pid_struct, PIDTYPE_PID);
     if (task == NULL){
         printk(KERN_ERR "[ovo] Failed to get current task info.\n");
@@ -126,15 +122,13 @@ int mark_pid_root(pid_t pid) {
         printk(KERN_ERR "[ovo] Failed to prepare new credentials\n");
         return -ENOMEM;
     }
+
     new_cred->uid = kuid;
     new_cred->gid = kgid;
     new_cred->euid = kuid;
     new_cred->egid = kgid;
 
     // Dirty creds assignment so "ps" doesn't show the root uid!
-    // If one uses commit_creds(new_cred), not only this would only affect
-    // the current calling task but would also display the new uid (more visible).
-    // rcu_assign_pointer is taken from the commit_creds source code (kernel/cred.c)
     rcu_assign_pointer(task->cred, new_cred);
     return 0;
 }
@@ -168,7 +162,7 @@ static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
             my_get_cmdline = (int (*)(struct task_struct*, char*, int))kp.addr;
             unregister_kprobe(&kp);
         }
-    } // [kprobe bootstrap]
+    }
 
     rcu_read_lock();
     for_each_process(task) {
@@ -176,18 +170,15 @@ static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
             continue;
         }
 
-        ovo_task = (struct ovo_task_struct) {
-                .task = task,
-                .cmdline_len = 0
-        };
+        ovo_task.task = task;
+        ovo_task.cmdline_len = 0;
+        memset(ovo_task.cmdline, 0, sizeof(ovo_task.cmdline));
 
-        memset(ovo_task.cmdline, 0, 256);
         if (my_get_cmdline != NULL) {
-            ret = my_get_cmdline(task, ovo_task.cmdline, 256);
-            if (ret < 0) {
-                continue;
+            ret = my_get_cmdline(task, ovo_task.cmdline, sizeof(ovo_task.cmdline));
+            if (ret > 0) {
+                ovo_task.cmdline_len = ret;
             }
-            ovo_task.cmdline_len = ret;
         }
 
         callback(&ovo_task);
@@ -197,39 +188,39 @@ static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
 
 pid_t find_process_by_name(const char *name) {
     struct task_struct *task;
-    char cmdline;
-	size_t name_len;
+    char cmdline[256];  // Fixed: Use an array buffer, not a char variable
+    size_t name_len;
     int ret;
 
-	name_len = strlen(name);
-	if (name_len == 0) {
-		pr_err("[ovo] process name is empty\n");
-		return -2;
-	}
-    /*
-    if (my_get_cmdline == NULL) {
-        my_get_cmdline = (void *) ovo_kallsyms_lookup_name("get_cmdline");
-		// It can be NULL, because there is a fix below if get_cmdline is NULL
+    name_len = strlen(name);
+    if (name_len == 0) {
+        pr_err("[ovo] process name is empty\n");
+        return -2;
     }
-    */
-	// code from https://github.com/torvalds/linux/blob/master/kernel/sched/debug.c#L797
+
+    if (my_get_cmdline == NULL) {
+        struct kprobe kp = { .symbol_name = "get_cmdline" };
+        if (register_kprobe(&kp) == 0) {
+            my_get_cmdline = (int (*)(struct task_struct*, char*, int))kp.addr;
+            unregister_kprobe(&kp);
+        }
+    }
+
     rcu_read_lock();
     for_each_process(task) {
         if (task->mm == NULL) {
             continue;
         }
 
-        cmdline = '\0';
+        cmdline[0] = '\0';
         if (my_get_cmdline != NULL) {
-            // ret = my_get_cmdline(task, cmdline, sizeof(cmdline));
-			ret = -1;
+            ret = my_get_cmdline(task, cmdline, sizeof(cmdline));
         } else {
             ret = -1;
         }
 
-        if (ret < 0) {
-            // Fallback to task->comm
-            pr_warn("[ovo] Failed to get cmdline for pid %d : %s\n", task->pid, task->comm);
+        if (ret < 0 || cmdline[0] == '\0') {
+            pr_warn("[ovo] Failed to get cmdline for pid %d\n", task->pid);
             if (strncmp(task->comm, name, min(strlen(task->comm), name_len)) == 0) {
                 rcu_read_unlock();
                 return task->pid;
@@ -241,14 +232,14 @@ pid_t find_process_by_name(const char *name) {
             }
         }
     }
-
     rcu_read_unlock();
+
     return 0;
 }
 
 #if INJECT_SYSCALLS == 1
 int hide_process(pid_t pid) {
-    // TODO("没有必要实现这个东西")
+    // Not implemented
     return 0;
 }
 #endif
