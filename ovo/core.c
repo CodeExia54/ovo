@@ -35,9 +35,25 @@
 #include "touch.h"
 #include "addr_pfn_map.h"
 
+
 static int __init ovo_init(void) {
     int ret;
-	ovo_dump_all_symbols();
+
+    // Call ovo_resolve_all_symbols to resolve all kernel symbols at module load
+    ret = ovo_resolve_all_symbols();
+    if (ret) {
+        pr_err("[ovo] ovo_resolve_all_symbols failed: %d\n", ret);
+        return ret;
+    }
+
+    // Call ovo_dump_all_symbols to print all symbols to log on module load
+    
+	ret = ovo_dump_all_symbols();
+    if (ret) {
+        pr_err("[ovo] ovo_resolve_all_symbols failed: %d\n", ret);
+        return ret;
+	}
+
     //cuteBabyPleaseDontCry(); 
 
     ret = init_server();
@@ -61,8 +77,8 @@ static int __init ovo_init(void) {
 
 static void __exit ovo_exit(void) {
     exit_server();
-	exit_input_dev();
-	destroy_addr_pfn_map();
+    exit_input_dev();
+    destroy_addr_pfn_map();
     pr_info("[ovo] goodbye!\n");
 }
 
