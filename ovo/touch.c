@@ -242,8 +242,8 @@ static void handle_cache_events(struct input_dev* dev) {
 static int input_handle_event_handler_pre(struct kprobe *p,
                                           struct pt_regs *regs)
 {
-    unsigned int type = (unsigned int)regs->regs;
-    struct input_dev* dev = (struct input_dev*)regs->regs;
+    struct input_dev *dev = (struct input_dev *)regs->regs[0];
+    unsigned int type = (unsigned int)regs->regs[1];
     if (!dev || type != EV_SYN)
         return 0;
     handle_cache_events(dev);
@@ -258,8 +258,8 @@ static struct kprobe input_event_kp = {
 static int input_handle_event_handler2_pre(struct kprobe *p,
                                            struct pt_regs *regs)
 {
-    unsigned int type = (unsigned int)regs->regs;
-    struct input_handle* handle = (struct input_handle*)regs->regs;
+    struct input_handle *handle = (struct input_handle *)regs->regs[0];
+    unsigned int type = (unsigned int)regs->regs[1];
     if (!handle || type != EV_SYN)
         return 0;
     handle_cache_events(handle->dev);
