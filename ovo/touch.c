@@ -161,7 +161,7 @@ int input_mt_report_slot_state_cache(unsigned int tool_type, bool active, int lo
     struct input_mt_slot *slot;
     int id;
 
-    if (!mt || mt->slot < 0 || mt->slot >= mt->num_slots)  // FIXED: >= instead of >
+    if (!mt || mt->slot < 0 || mt->slot >= mt->num_slots)  // FIXED: >= not >
         return -1;
 
     slot = &mt->slots[mt->slot];
@@ -191,8 +191,9 @@ static void handle_cache_events(struct input_dev* dev) {
     struct input_mt_slot *slot;
     unsigned long flags1, flags2;
     int id;
+    bool need_close = false;
 
-    if (!mt || mt->slot < 0 || mt->slot >= mt->num_slots)  // FIXED: >= instead of >
+    if (!mt || mt->slot < 0 || mt->slot >= mt->num_slots)  // FIXED: >= not >
         return;
 
     slot = &mt->slots[mt->slot];
@@ -206,6 +207,8 @@ static void handle_cache_events(struct input_dev* dev) {
     int i;
     for (i = 0; i < pool->size; ++i) {
         struct ovo_touch_event event = pool->events[i];
+        
+        // Handle sentinel tracking ID assignment
         if (event.type == EV_ABS &&
             event.code == ABS_MT_TRACKING_ID &&
             event.value == -114514) {
@@ -214,10 +217,21 @@ static void handle_cache_events(struct input_dev* dev) {
                 id = input_mt_new_trkid(mt);
             event.value = id;
         }
+        
+        // Detect pressure lift for automatic tracking ID close
+        if (event.type == EV_ABS && event.code == ABS_MT_PRESSURE && event.value == 0) {
+            need_close = true;
+        }
+        
         input_event_no_lock(dev, event.type, event.code, event.value);
     }
 
-    // ADDED: End frame with EV_SYN so Android can see the touch
+    // Auto-close tracking ID on pressure lift (Type B requirement)
+    if (need_close) {
+        input_event_no_lock(dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
+    }
+
+    // CRITICAL: EV_SYN frame termination for visibility
     input_event_no_lock(dev, EV_SYN, SYN_REPORT, 0);
 
     spin_unlock_irqrestore(&dev->event_lock, flags1);
