@@ -1,4 +1,4 @@
-   #include <linux/kprobes.h>
+#include <linux/kprobes.h>
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/errno.h>
@@ -169,12 +169,10 @@ void ovo_unregister_getcmd_kprobe(void) {
 static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
     struct task_struct *task;
     struct ovo_task_struct ovo_task;
+    char comm[TASK_COMM_LEN];
     int ret = 0;
 
-    if (ovo_register_getcmd_kprobe_once() < 0)
-        pr_err("[ovo] Failed to register kprobe for get_cmdline\n");
-    else
-        pr_info("[ovo] foreach_process: kprobe registered, my_get_cmdline=%px\n", my_get_cmdline);
+    ovo_register_getcmd_kprobe_once();
 
     rcu_read_lock();
     for_each_process(task) {
@@ -187,14 +185,12 @@ static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
 
         if (my_get_cmdline != NULL) {
             ret = my_get_cmdline(task, ovo_task.cmdline, sizeof(ovo_task.cmdline));
-            pr_debug("[ovo] foreach_process: pid=%d ret=%d cmdline=%s\n",
-                     task->pid, ret, (ret > 0 ? ovo_task.cmdline : "(empty)"));
             if (ret > 0)
                 ovo_task.cmdline_len = ret;
         } else {
-            get_task_comm(ovo_task.cmdline, task);
+            get_task_comm(comm, task);
+            strscpy(ovo_task.cmdline, comm, sizeof(ovo_task.cmdline));
             ovo_task.cmdline_len = strnlen(ovo_task.cmdline, sizeof(ovo_task.cmdline));
-            pr_debug("[ovo] foreach_process: pid=%d fallback comm=%s\n", task->pid, ovo_task.cmdline);
         }
 
         callback(&ovo_task);
@@ -205,6 +201,7 @@ static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
 pid_t find_process_by_name(const char *name) {
     struct task_struct *task;
     char cmdline[256];
+    char comm[TASK_COMM_LEN];
     size_t name_len;
     int ret;
 
@@ -214,10 +211,7 @@ pid_t find_process_by_name(const char *name) {
         return -2;
     }
 
-    if (ovo_register_getcmd_kprobe_once() < 0)
-        pr_err("[ovo] Failed to register kprobe for get_cmdline\n");
-    else
-        pr_info("[ovo] find_process_by_name: kprobe registered, my_get_cmdline=%px\n", my_get_cmdline);
+    ovo_register_getcmd_kprobe_once();
 
     rcu_read_lock();
     for_each_process(task) {
@@ -227,25 +221,20 @@ pid_t find_process_by_name(const char *name) {
         cmdline[0] = '\0';
         if (my_get_cmdline != NULL) {
             ret = my_get_cmdline(task, cmdline, sizeof(cmdline));
-            pr_debug("[ovo] find_process_by_name: pid=%d ret=%d cmdline=%s\n",
-                     task->pid, ret, (ret >= 0 ? cmdline : "(failed)"));
         } else {
             ret = -1;
-            get_task_comm(cmdline, task);
-            pr_debug("[ovo] find_process_by_name: pid=%d fallback comm=%s\n", task->pid, cmdline);
+            get_task_comm(comm, task);
+            strscpy(cmdline, comm, sizeof(cmdline)); // copy into 256-sized buffer
         }
 
         if (ret < 0 || cmdline[0] == '\0') {
-            pr_warn("[ovo] Failed to get cmdline for pid %d, checking comm=%s\n",
-                    task->pid, task->comm);
+            pr_warn("[ovo] Failed to get cmdline for pid %d\n", task->pid);
             if (strncmp(task->comm, name, min(strlen(task->comm), name_len)) == 0) {
-                pr_info("[ovo] Matched process by comm: pid=%d name=%s\n", task->pid, task->comm);
                 rcu_read_unlock();
                 return task->pid;
             }
         } else {
             if (strncmp(cmdline, name, min(name_len, strlen(cmdline))) == 0) {
-                pr_info("[ovo] Matched process by cmdline: pid=%d cmdline=%s\n", task->pid, cmdline);
                 rcu_read_unlock();
                 return task->pid;
             }
