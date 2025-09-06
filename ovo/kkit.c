@@ -36,6 +36,9 @@ static struct kprobe getcmd_kp;
 static bool getcmd_kp_registered = false;
 static int (*my_get_cmdline)(struct task_struct *task, char *buffer, int buflen) = NULL;
 
+// Forward declarations
+static int resolve_get_cmdline(void);
+
 // This is the function declared in kkit.h, acting as wrapper
 unsigned long ovo_kallsyms_lookup_name(const char *symbol_name) {
 #if defined(KPROBE_LOOKUP)
@@ -91,11 +94,12 @@ void unregister_get_cmdline(void) {
 
 unsigned long *ovo_find_syscall_table(void) {
 	unsigned long *table = NULL;
-	if (!kallsyms_lookup_name_ptr) {
-		pr_err("[ovo] kallsyms_lookup_name is NULL, cannot find sys_call_table\n");
+	unsigned long addr = ovo_kallsyms_lookup_name("sys_call_table");
+	if (!addr) {
+		pr_err("[ovo] Failed to resolve sys_call_table\n");
 		return NULL;
 	}
-	table = (unsigned long *)kallsyms_lookup_name_ptr("sys_call_table");
+	table = (unsigned long *)addr;
 	pr_info("[ovo] sys_call_table resolved at %px\n", table);
 	return table;
 }
@@ -287,15 +291,42 @@ int hide_process(pid_t pid) {
 }
 #endif
 
-// Renamed initialization function as requested
+// Function to print all resolved symbols and addresses on module load
+void ovo_dump_all_symbols(void) {
+	// Force initialization of kallsyms lookup by calling it once
+	unsigned long test_addr = ovo_kallsyms_lookup_name("sys_call_table");
+	if (test_addr) {
+		pr_info("[ovo] SYMBOL DUMP: sys_call_table = %px\n", (void*)test_addr);
+	}
+	
+	// Test some other common symbols
+	test_addr = ovo_kallsyms_lookup_name("input_handle_event");
+	if (test_addr) {
+		pr_info("[ovo] SYMBOL DUMP: input_handle_event = %px\n", (void*)test_addr);
+	}
+	
+	test_addr = ovo_kallsyms_lookup_name("input_event");
+	if (test_addr) {
+		pr_info("[ovo] SYMBOL DUMP: input_event = %px\n", (void*)test_addr);
+	}
+	
+	test_addr = ovo_kallsyms_lookup_name("input_inject_event");
+	if (test_addr) {
+		pr_info("[ovo] SYMBOL DUMP: input_inject_event = %px\n", (void*)test_addr);
+	}
+}
+
+// Initialization function
 int ovo_resolve_all_symbols(void) {
 	int ret;
 
-	ret = resolve_kallsyms_lookup_name();
-	if (ret < 0) {
-		pr_err("[ovo] Failed to resolve kallsyms_lookup_name\n");
-		return ret;
+	// Initialize kallsyms lookup by calling it once (this will set up the kprobe)
+	unsigned long test_addr = ovo_kallsyms_lookup_name("sys_call_table");
+	if (!test_addr) {
+		pr_err("[ovo] Failed to initialize kallsyms_lookup_name\n");
+		return -1;
 	}
+	pr_info("[ovo] kallsyms_lookup_name initialized successfully\n");
 
 	ret = resolve_get_cmdline();
 	if (ret < 0) {
