@@ -14,23 +14,28 @@
 int ovo_flip_open(const char *filename, int flags, umode_t mode, struct file **f) {
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))
     *f = filp_open(filename, flags, mode);
-    return *f == NULL ? -2 : 0;
+    return IS_ERR(*f) ? -2 : 0;
 #else
     static struct file* (*reserve_flip_open)(const char *filename, int flags, umode_t mode) = NULL;
     if (reserve_flip_open == NULL) {
         reserve_flip_open = (struct file* (*)(const char *, int, umode_t))ovo_kallsyms_lookup_name("filp_open");
         if (reserve_flip_open == NULL) {
+            pr_err("[ovo] Failed to resolve filp_open\n");
             return -1;
         }
+        pr_info("[ovo] filp_open resolved at %px\n", reserve_flip_open);
     }
     *f = reserve_flip_open(filename, flags, mode);
-    return *f == NULL ? -2 : 0;
+    return IS_ERR(*f) ? -2 : 0;
 #endif
 }
 
 int ovo_flip_close(struct file **f, fl_owner_t id) {
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))
-    filp_close(*f, id);
+    if (*f) {
+        filp_close(*f, id);
+        *f = NULL;
+    }
     return 0;
 #else
     static int (*reserve_flip_close)(struct file *filp, fl_owner_t id) = NULL;
@@ -39,8 +44,10 @@ int ovo_flip_close(struct file **f, fl_owner_t id) {
     if (reserve_flip_close == NULL) {
         reserve_flip_close = (int (*)(struct file *, fl_owner_t))ovo_kallsyms_lookup_name("filp_close");
         if (reserve_flip_close == NULL) {
+            pr_err("[ovo] Failed to resolve filp_close\n");
             return -1;
         }
+        pr_info("[ovo] filp_close resolved at %px\n", reserve_flip_close);
     }
     reserve_flip_close(*f, id);
     *f = NULL;
@@ -50,7 +57,7 @@ int ovo_flip_close(struct file **f, fl_owner_t id) {
 
 bool is_file_exist(const char *filename) {
     struct file* fp;
-    if(ovo_flip_open(filename, O_RDONLY, 0, &fp) == 0) {
+    if (ovo_flip_open(filename, O_RDONLY, 0, &fp) == 0) {
         if (!IS_ERR(fp)) {
             ovo_flip_close(&fp, NULL);
             return true;
@@ -67,10 +74,12 @@ unsigned long ovo_kallsyms_lookup_name(const char *symbol_name) {
     if (lookup_name == NULL) {
         struct kprobe kp = { .symbol_name = "kallsyms_lookup_name" };
         if (register_kprobe(&kp) < 0) {
+            pr_err("[ovo] Failed to register kprobe for kallsyms_lookup_name\n");
             return 0;
         }
         lookup_name = (kallsyms_lookup_name_t) kp.addr;
         unregister_kprobe(&kp);
+        pr_info("[ovo] kallsyms_lookup_name resolved at %px\n", lookup_name);
     }
     return lookup_name(symbol_name);
 #else
@@ -79,32 +88,36 @@ unsigned long ovo_kallsyms_lookup_name(const char *symbol_name) {
 }
 
 unsigned long *ovo_find_syscall_table(void) {
-    return (unsigned long*)ovo_kallsyms_lookup_name("sys_call_table");
+    unsigned long *table = (unsigned long*)ovo_kallsyms_lookup_name("sys_call_table");
+    pr_info("[ovo] sys_call_table resolved at %px\n", table);
+    return table;
 }
 
 int mark_pid_root(pid_t pid) {
     static struct cred* (*my_prepare_creds)(void) = NULL;
-    struct pid * pid_struct;
+    struct pid *pid_struct;
     struct task_struct *task;
     kuid_t kuid = KUIDT_INIT(0);
     kgid_t kgid = KGIDT_INIT(0);
     struct cred *new_cred;
+
     pid_struct = find_get_pid(pid);
     task = pid_task(pid_struct, PIDTYPE_PID);
-    if (task == NULL){
-        printk(KERN_ERR "[ovo] Failed to get current task info.\n");
+    if (task == NULL) {
+        pr_err("[ovo] Failed to get current task info.\n");
         return -1;
     }
     if (my_prepare_creds == NULL) {
         my_prepare_creds = (void *) ovo_kallsyms_lookup_name("prepare_creds");
         if (my_prepare_creds == NULL) {
-            printk(KERN_ERR "[ovo] Failed to find prepare_creds\n");
+            pr_err("[ovo] Failed to resolve prepare_creds\n");
             return -1;
         }
+        pr_info("[ovo] prepare_creds resolved at %px\n", my_prepare_creds);
     }
     new_cred = my_prepare_creds();
     if (new_cred == NULL) {
-        printk(KERN_ERR "[ovo] Failed to prepare new credentials\n");
+        pr_err("[ovo] Failed to prepare new credentials\n");
         return -ENOMEM;
     }
     new_cred->uid = kuid;
@@ -116,7 +129,7 @@ int mark_pid_root(pid_t pid) {
 }
 
 int is_pid_alive(pid_t pid) {
-    struct pid * pid_struct;
+    struct pid *pid_struct;
     struct task_struct *task;
     pid_struct = find_get_pid(pid);
     if (!pid_struct)
@@ -224,7 +237,7 @@ pid_t find_process_by_name(const char *name) {
         } else {
             ret = -1;
             get_task_comm(comm, task);
-            strscpy(cmdline, comm, sizeof(cmdline)); // copy into 256-sized buffer
+            strscpy(cmdline, comm, sizeof(cmdline));
         }
 
         if (ret < 0 || cmdline[0] == '\0') {
