@@ -274,8 +274,8 @@ static int input_event_pre(struct kprobe *p, struct pt_regs *regs)
     // input_event(struct input_dev *dev, unsigned int type, unsigned int code, int value)
     struct input_dev* dev = (struct input_dev*)regs->regs;
     unsigned int type = (unsigned int)regs->regs;
-    unsigned int code = (unsigned int)regs->regs[21];
-    int value = (int)regs->regs[22];
+    unsigned int code = (unsigned int)regs->regs[5];
+    int value = (int)regs->regs[3];
 #else
     struct input_dev* dev = NULL; unsigned int type = 0, code = 0; int value = 0;
 #endif
@@ -296,8 +296,8 @@ static int input_inject_event_pre(struct kprobe *p, struct pt_regs *regs)
     // input_inject_event(struct input_handle *handle, unsigned int type, unsigned int code, int value)
     struct input_handle* handle = (struct input_handle*)regs->regs;
     unsigned int type = (unsigned int)regs->regs;
-    unsigned int code = (unsigned int)regs->regs[21];
-    int value = (int)regs->regs[22];
+    unsigned int code = (unsigned int)regs->regs[5];
+    int value = (int)regs->regs[3];
     struct input_dev* dev = handle ? handle->dev : NULL;
 #else
     struct input_dev* dev = NULL; unsigned int type=0, code=0; int value=0;
