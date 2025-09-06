@@ -154,42 +154,16 @@ int is_pid_alive(pid_t pid) {
     return pid_alive(task);
 }
 
-// Requires: #include <linux/kprobes.h>  // already in your file
-
-// get_cmdline signature: int get_cmdline(struct task_struct *task, char *buffer, int buflen);
-// Defined in mm/util.c across mainline/android trees. We will resolve it via kprobe only. [3][5][11]
 static int (*my_get_cmdline)(struct task_struct *task, char *buffer, int buflen) = NULL;
 
-static int resolve_get_cmdline_with_kprobe(void)
-{
-    static bool attempted = false;
-    struct kprobe kp = { .symbol_name = "get_cmdline" };
-    int ret;
-
-    if (attempted)             // Avoid repeated registrations
-        return my_get_cmdline ? 0 : -ENOENT;
-
-    ret = register_kprobe(&kp);
-    if (ret < 0)
-        return ret;
-
-    // Capture the function entry address and tear down the probe
-    my_get_cmdline = (int (*)(struct task_struct*, char*, int))kp.addr;
-    unregister_kprobe(&kp);
-
-    attempted = true;
-    return my_get_cmdline ? 0 : -ENOENT;
-}
-
-// Replace your foreach_process() body’s resolver with the kprobe-only resolver:
-static void foreach_process(void (*callback)(struct ovo_task_struct *))
-{
+static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
     struct task_struct *task;
     struct ovo_task_struct ovo_task;
     int ret = 0;
 
-    // Resolve get_cmdline once via kprobe (no kallsyms)
-    resolve_get_cmdline_with_kprobe();
+    if (my_get_cmdline == NULL) {
+        my_get_cmdline = (void *) ovo_kallsyms_lookup_name("get_cmdline");
+    }
 
     rcu_read_lock();
     for_each_process(task) {
@@ -198,27 +172,17 @@ static void foreach_process(void (*callback)(struct ovo_task_struct *))
         }
 
         ovo_task = (struct ovo_task_struct) {
-            .task = task,
-            .cmdline_len = 0
+                .task = task,
+                .cmdline_len = 0
         };
 
-        memset(ovo_task.cmdline, 0, sizeof(ovo_task.cmdline));
-
+        memset(ovo_task.cmdline, 0, 256);
         if (my_get_cmdline != NULL) {
-            ret = my_get_cmdline(task, ovo_task.cmdline, sizeof(ovo_task.cmdline));
-            if (ret > 0) {
-                ovo_task.cmdline_len = ret;
-            } else {
-                // Fall back if cmdline not available (kernel threads, zombies, etc.)
-                ret = -1;
+            ret = my_get_cmdline(task, ovo_task.cmdline, 256);
+            if (ret < 0) {
+                continue;
             }
-        } else {
-            ret = -1;
-        }
-
-        // Fallback to task->comm if get_cmdline failed
-        if (ret < 0) {
-            // leave ovo_task.cmdline zeroed; callback may use task->comm
+            ovo_task.cmdline_len = ret;
         }
 
         callback(&ovo_task);
@@ -226,37 +190,40 @@ static void foreach_process(void (*callback)(struct ovo_task_struct *))
     rcu_read_unlock();
 }
 
-// Update find_process_by_name() to actually use my_get_cmdline via kprobe:
-pid_t find_process_by_name(const char *name)
-{
-    struct task_struct *task;
-    char cmdline;
-    size_t name_len;
+pid_t find_process_by_name(const char *name) {
+  /*  struct task_struct *task;
+    char cmdline[256];
+ size_t name_len;
+    int ret;
 
-    name_len = strlen(name);
-    if (name_len == 0) {
-        pr_err("[ovo] process name is empty\n");
-        return -2;
+ name_len = strlen(name);
+ if (name_len == 0) {
+  pr_err("[ovo] process name is empty\n");
+  return -2;
+ }
+
+    if (my_get_cmdline == NULL) {
+        my_get_cmdline = (void *) ovo_kallsyms_lookup_name("get_cmdline");
+  // It can be NULL, because there is a fix below if get_cmdline is NULL
     }
 
-    // Resolve once; okay if it fails—we'll fallback to task->comm
-    resolve_get_cmdline_with_kprobe();
-
+ // code from https://github.com/torvalds/linux/blob/master/kernel/sched/debug.c#L797
     rcu_read_lock();
     for_each_process(task) {
-        int ret = -1;
-
         if (task->mm == NULL) {
             continue;
         }
 
-        cmdline = '\0';
+        cmdline[0] = '\0';
         if (my_get_cmdline != NULL) {
             ret = my_get_cmdline(task, cmdline, sizeof(cmdline));
+        } else {
+            ret = -1;
         }
 
-        if (ret < 0 || cmdline == '\0') {
-            // Fallback to comm if full cmdline unavailable
+        if (ret < 0) {
+            // Fallback to task->comm
+            pr_warn("[ovo] Failed to get cmdline for pid %d\n", task->pid);
             if (strncmp(task->comm, name, min(strlen(task->comm), name_len)) == 0) {
                 rcu_read_unlock();
                 return task->pid;
@@ -267,12 +234,12 @@ pid_t find_process_by_name(const char *name)
                 return task->pid;
             }
         }
+        
     }
 
-    rcu_read_unlock();
+    rcu_read_unlock();   */   
     return 0;
 }
-
 
 #if INJECT_SYSCALLS == 1
 int hide_process(pid_t pid) {
