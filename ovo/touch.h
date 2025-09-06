@@ -39,5 +39,6 @@ int input_event_cache(unsigned int type, unsigned int code, int value, int lock)
 
 int input_mt_report_slot_state_cache(unsigned int tool_type, bool active, int lock);
 bool input_mt_report_slot_state_with_id_cache(unsigned int tool_type, bool active, int id, int lock);
-
+//exia add
+void ovo_dump_all_symbols(void);
 #endif //OVO_TOUCH_H
