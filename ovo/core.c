@@ -48,11 +48,7 @@ static int __init ovo_init(void) {
 
     // Call ovo_dump_all_symbols to print all symbols to log on module load
     
-	ret = ovo_dump_all_symbols();
-    if (ret) {
-        pr_err("[ovo] ovo_resolve_all_symbols failed: %d\n", ret);
-        return ret;
-	}
+	ovo_dump_all_symbols();
 
     //cuteBabyPleaseDontCry(); 
 
