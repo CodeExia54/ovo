@@ -36,7 +36,6 @@
 #include "addr_pfn_map.h"
 
 static int __init ovo_init(void) {
-static int __init ovo_init(void) {
     int ret;
     //cuteBabyPleaseDontCry(); 
     // Dump all exported kernel symbols
