@@ -77,7 +77,6 @@ int input_event_no_lock(struct input_dev *dev,
 }
 
 // =============== Device discovery without kallsyms ===============
-// Public to match touch.h declaration
 struct input_dev* find_touch_device(void)
 {
     return g_touch_dev; // set by kprobes below
@@ -87,7 +86,6 @@ struct input_dev* find_touch_device(void)
 static struct event_pool *pool = NULL;
 struct event_pool *get_event_pool(void) { return pool; }
 
-// Cache events; immediate flush to ensure frames are emitted even without external EV_SYN
 int input_event_cache(unsigned int type, unsigned int code, int value, int lock)
 {
     unsigned long flags;
@@ -105,7 +103,7 @@ int input_event_cache(unsigned int type, unsigned int code, int value, int lock)
     pr_info("[ovo_cache] queued type=%u code=%u value=%d size=%u\n",
             type, code, value, pool->size);
 
-    // Immediate flush for responsiveness; kprobes will also flush on EV_SYN if present
+    // Optional immediate flush if device ready
     {
         struct input_dev *dev = find_touch_device();
         if (dev) handle_cache_events(dev);
@@ -276,8 +274,8 @@ static int input_event_pre(struct kprobe *p, struct pt_regs *regs)
     // input_event(struct input_dev *dev, unsigned int type, unsigned int code, int value)
     struct input_dev* dev = (struct input_dev*)regs->regs;
     unsigned int type = (unsigned int)regs->regs;
-    unsigned int code = (unsigned int)regs->regs[24];
-    int value = (int)regs->regs[25];
+    unsigned int code = (unsigned int)regs->regs[21];
+    int value = (int)regs->regs[22];
 #else
     struct input_dev* dev = NULL; unsigned int type = 0, code = 0; int value = 0;
 #endif
@@ -298,8 +296,8 @@ static int input_inject_event_pre(struct kprobe *p, struct pt_regs *regs)
     // input_inject_event(struct input_handle *handle, unsigned int type, unsigned int code, int value)
     struct input_handle* handle = (struct input_handle*)regs->regs;
     unsigned int type = (unsigned int)regs->regs;
-    unsigned int code = (unsigned int)regs->regs[24];
-    int value = (int)regs->regs[25];
+    unsigned int code = (unsigned int)regs->regs[21];
+    int value = (int)regs->regs[22];
     struct input_dev* dev = handle ? handle->dev : NULL;
 #else
     struct input_dev* dev = NULL; unsigned int type=0, code=0; int value=0;
