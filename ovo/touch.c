@@ -264,7 +264,8 @@ static void handle_cache_events(struct input_dev* dev) {
     }
     spin_lock_irqsave(&dev->event_lock, flags1);
 
-    for (int i = 0; i < pool->size; ++i) {
+         int i;
+        for (i = 0; i < pool->size; ++i) {
         struct ovo_touch_event event = pool->events[i];
         if (event.type == EV_ABS && event.code == ABS_MT_TRACKING_ID && event.value == -114514) {
             id = input_mt_get_value(slot, ABS_MT_TRACKING_ID);
