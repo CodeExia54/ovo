@@ -17,6 +17,7 @@ unsigned long ovo_kallsyms_lookup_name(const char* symbol_name);
 unsigned long * ovo_find_syscall_table(void);
 
 /// ====================
+int ovo_resolve_all_symbols(void);
 
 /// File operation
 
