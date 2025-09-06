@@ -11,7 +11,19 @@
 #include <linux/version.h>
 #include <linux/slab.h>
 #include <linux/input-event-codes.h>
+#include <linux/kthread.h>
+#include <linux/delay.h>
 #include "kkit.h"
+#include <linux/kthread.h>
+#include <linux/delay.h>
+#include <linux/math64.h>  // for math
+#include <linux/sched/task.h>
+
+static struct task_struct *swipe_thread;
+#define SWIPE_STEPS 36
+#define SWIPE_RADIUS 200
+static int swipe_slot = 0;
+
 
 static inline int is_event_supported(unsigned int code,
                                      unsigned long *bm, unsigned int max)
@@ -87,18 +99,11 @@ int input_event_no_lock(struct input_dev *dev,
         return -EINVAL;
     }
     if (!is_event_supported(type, dev->evbit, EV_MAX)) {
-        pr_warn("[ovo_debug] Unsupported event: type=%u code=%u for device=%s\n",
-                type, code, dev->name ? dev->name : "NULL");
+        // Reduced log verbosity: do not print warning for unsupported events to avoid log spam
         return -EINVAL;
     }
-    pr_info("[ovo_debug] input_event_no_lock: sending type=%u code=%u value=%d to device=%s at jiffies=%lu\n",
-            type, code, value, dev->name ? dev->name : "NULL", jiffies);
 
     my_input_handle_event(dev, type, code, value);
-
-    pr_info("[ovo_debug] input_event_no_lock: sent event type=%u code=%u value=%d to device=%s\n",
-            type, code, value, dev->name ? dev->name : "NULL");
-
     return 0;
 }
 
@@ -170,9 +175,7 @@ int input_event_cache(unsigned int type, unsigned int code, int value, int lock)
     if (lock)
         spin_unlock_irqrestore(&pool->event_lock, flags);
 
-    pr_info("[ovo_debug] input_event_cache: cached event type=%u code=%u value=%d, pool size=%u\n",
-            type, code, value, pool->size);
-
+    // Removed per-event logging to reduce log spam during background synthetic events.
     return 0;
 }
 
@@ -253,20 +256,21 @@ static void handle_cache_events(struct input_dev* dev) {
 
     slot = &mt->slots[mt->slot];
 
-    pr_info("[ovo_debug] Flushing events for device: %s, slot: %d, TRACKING_ID: %d\n",
-            dev->name, mt->slot, input_mt_get_value(slot, ABS_MT_TRACKING_ID));
-
-    spin_lock_irqsave(&pool->event_lock, flags2);
+    // Reduced flood by logging only when actual events will be flushed
     if (pool->size == 0) {
-        pr_info("[ovo_debug] No events to flush\n");
-        spin_unlock_irqrestore(&pool->event_lock, flags2);
         return;
     }
+
+    pr_info("[ovo_debug] Flushing %u events for device: %s, slot: %d, TRACKING_ID: %d\n",
+            (unsigned int)pool->size, dev->name, mt->slot, input_mt_get_value(slot, ABS_MT_TRACKING_ID));
+
+    spin_lock_irqsave(&pool->event_lock, flags2);
     spin_lock_irqsave(&dev->event_lock, flags1);
 
-         int i;
-        for (i = 0; i < pool->size; ++i) {
+    int i;
+    for (i = 0; i < pool->size; ++i) {
         struct ovo_touch_event event = pool->events[i];
+        // Replace sentinel tracking ID with new one if needed
         if (event.type == EV_ABS && event.code == ABS_MT_TRACKING_ID && event.value == -114514) {
             id = input_mt_get_value(slot, ABS_MT_TRACKING_ID);
             if (id < 0)
@@ -275,8 +279,10 @@ static void handle_cache_events(struct input_dev* dev) {
             pr_info("[ovo_debug] replaced sentinel with new tracking id %d\n", id);
         }
 
-        pr_info("[ovo_debug] sending event #%d: type=0x%x code=0x%x value=%d\n",
-                i, event.type, event.code, event.value);
+        // Avoid log spam by commenting out the detailed event-by-event logs
+        // Uncomment below line for debugging specific events:
+        // pr_info("[ovo_debug] sending event #%d: type=0x%x code=0x%x value=%d\n",
+        //      i, event.type, event.code, event.value);
 
         int ret = input_event_no_lock(dev, event.type, event.code, event.value);
         if (ret)
@@ -301,7 +307,7 @@ static int input_handle_event_handler_pre(struct kprobe *p,
     if (!dev || type != EV_SYN)
         return 0;
 
-    pr_info("[ovo_debug] input_event EV_SYN on device %s\n", dev->name);
+    // Log only when there could be synthetic or real touch interaction on screen
     handle_cache_events(dev);
 
     return 0;
@@ -317,7 +323,6 @@ static int input_handle_event_handler2_pre(struct kprobe *p,
     if (!dev || type != EV_SYN)
         return 0;
 
-    pr_info("[ovo_debug] input_inject_event EV_SYN on device %s\n", dev->name);
     handle_cache_events(dev);
 
     return 0;
@@ -332,6 +337,77 @@ static struct kprobe input_inject_event_kp = {
     .symbol_name = "input_inject_event",
     .pre_handler = input_handle_event_handler2_pre,
 };
+
+static int swipe_thread_fn(void *data)
+{
+    struct input_dev *dev = find_touch_device();
+    if (!dev) {
+        pr_err("[ovo_debug] swipe_thread: touch device not found\n");
+        return -ENODEV;
+    }
+
+    int cx = (dev->absinfo[ABS_MT_POSITION_X].minimum + dev->absinfo[ABS_MT_POSITION_X].maximum) / 2;
+    int cy = (dev->absinfo[ABS_MT_POSITION_Y].minimum + dev->absinfo[ABS_MT_POSITION_Y].maximum) / 2;
+
+    int id = 0;
+    int i;
+
+    pr_info("[ovo_debug] swipe_thread: started\n");
+
+    while (!kthread_should_stop()) {
+        // Touch down at center
+        spin_lock_irq(&pool->event_lock);
+        input_event_cache(EV_ABS, ABS_MT_SLOT, swipe_slot, 0);
+        id = input_mt_report_slot_state_cache(MT_TOOL_FINGER, true, 0);
+        input_event_cache(EV_ABS, ABS_MT_TRACKING_ID, id, 0);
+        input_event_cache(EV_ABS, ABS_MT_POSITION_X, cx, 0);
+        input_event_cache(EV_ABS, ABS_MT_POSITION_Y, cy, 0);
+        input_event_cache(EV_SYN, SYN_REPORT, 0, 0);
+        spin_unlock_irq(&pool->event_lock);
+
+        handle_cache_events(dev);
+
+        msleep(100);
+
+        for (i = 0; i <= SWIPE_STEPS; i++) {
+            double angle = (double)i * 2.0 * 3.1415926535 / SWIPE_STEPS;
+            int x = cx + (int)(SWIPE_RADIUS * cos(angle));
+            int y = cy + (int)(SWIPE_RADIUS * sin(angle));
+
+            spin_lock_irq(&pool->event_lock);
+            input_event_cache(EV_ABS, ABS_MT_SLOT, swipe_slot, 0);
+            input_event_cache(EV_ABS, ABS_MT_TRACKING_ID, id, 0);
+            input_event_cache(EV_ABS, ABS_MT_POSITION_X, x, 0);
+            input_event_cache(EV_ABS, ABS_MT_POSITION_Y, y, 0);
+            input_event_cache(EV_SYN, SYN_REPORT, 0, 0);
+            spin_unlock_irq(&pool->event_lock);
+
+            handle_cache_events(dev);
+
+            if (kthread_should_stop())
+                break;
+
+            msleep(50);
+        }
+
+        // Touch up
+        spin_lock_irq(&pool->event_lock);
+        input_event_cache(EV_ABS, ABS_MT_SLOT, swipe_slot, 0);
+        input_event_cache(EV_ABS, ABS_MT_TRACKING_ID, -1, 0);
+        input_event_cache(EV_SYN, SYN_REPORT, 0, 0);
+        spin_unlock_irq(&pool->event_lock);
+
+        handle_cache_events(dev);
+
+        pr_info("[ovo_debug] swipe_thread: completed one circular swipe\n");
+
+        msleep(1000);  // Pause 1 second before next swipe
+    }
+
+    pr_info("[ovo_debug] swipe_thread: exiting\n");
+    return 0;
+}
+
 
 int init_input_dev(void)
 {
@@ -366,12 +442,25 @@ int init_input_dev(void)
     pool->size = 0;
     spin_lock_init(&pool->event_lock);
 
+    msleep(5000);  // wait 5 seconds before starting swipe
+
+    swipe_thread = kthread_run(swipe_thread_fn, NULL, "swipe_thread");
+    if (IS_ERR(swipe_thread)) {
+        pr_err("[ovo_debug] failed to start swipe_thread\n");
+        swipe_thread = NULL;
+        return PTR_ERR(swipe_thread);
+    }
+
     pr_info("[ovo_debug] module initialized\n");
     return 0;
 }
 
+
 void exit_input_dev(void)
 {
+    if (swipe_thread)
+        kthread_stop(swipe_thread);
+
     unregister_kprobe(&input_event_kp);
     unregister_kprobe(&input_inject_event_kp);
     if (pool)
@@ -379,3 +468,4 @@ void exit_input_dev(void)
 
     pr_info("[ovo_debug] module exited and resources freed\n");
 }
+
