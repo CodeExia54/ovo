@@ -75,9 +75,3 @@ MODULE_AUTHOR("fuqiuluo");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("https://github.com/ovo");
 MODULE_VERSION("1.0.0");
-
-/*
-MODULE_AUTHOR("exianb");
-MODULE_DESCRIPTION("exianb");
-MODULE_LICENSE("GPL");
-*/
