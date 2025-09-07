@@ -158,12 +158,13 @@ pte_t *page_from_virt_user(struct mm_struct *mm, unsigned long addr) {
     return ptep;
 }
 #endif
-/*
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
 static inline int my_set_pte_at(struct mm_struct *mm,
                                  uintptr_t __always_unused addr,
                                  pte_t *ptep, pte_t pte)
 {
+	/*
     typedef void (*f__sync_icache_dcache)(pte_t pteval);
     typedef void (*f_mte_sync_tags)(pte_t pte, unsigned int nr_pages);
 
@@ -219,10 +220,11 @@ static inline int my_set_pte_at(struct mm_struct *mm,
     __check_racy_pte_update(mm, ptep, pte);
     set_pte(ptep, pte);
 #endif
-    return 0;
+	*/
+    return 0;	
 }
 #endif
-*/
+
 
 int protect_rodata_memory(unsigned nr) {
     pte_t pte;
@@ -238,7 +240,7 @@ int protect_rodata_memory(unsigned nr) {
     }
     pte = READ_ONCE(*ptep);
     pte = pte_wrprotect(pte);
-	/*
+/*
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
     if(my_set_pte_at(init_mm_ptr, addr, ptep, pte) != 0) {
         return -1;
@@ -247,6 +249,7 @@ int protect_rodata_memory(unsigned nr) {
     set_pte_at(init_mm_ptr, addr, ptep, pte);
 #endif
 */
+
     //flush_icache_range(addr, addr + PAGE_SIZE);
     //__clean_dcache_area_pou(data_addr, sizeof(data));
     __flush_tlb_kernel_pgtable(addr); // arm64
@@ -284,7 +287,8 @@ int unprotect_rodata_memory(unsigned nr) {
 #else
     set_pte_at(init_mm_ptr, addr, ptep, pte);
 #endif
-	*/
+*/
     __flush_tlb_kernel_pgtable(addr);
     return 0;
 }
+

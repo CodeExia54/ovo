@@ -35,25 +35,23 @@
 #include "touch.h"
 #include "addr_pfn_map.h"
 
-
 static int __init ovo_init(void) {
     int ret;
 
-    //cuteBabyPleaseDontCry();
-
+    cuteBabyPleaseDontCry();
     ret = 0;
 
     ret = init_server();
 	if(ret) {
 		return ret;
 	}
-    
+
 	// ret = init_input_dev();
-    
+    /*
 	if (!ret) {
 		init_addr_pfn_map();
 	}
-    
+    */
     return ret;
 }
 
@@ -75,3 +73,9 @@ MODULE_AUTHOR("fuqiuluo");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("https://github.com/ovo");
 MODULE_VERSION("1.0.0");
+
+/*
+MODULE_AUTHOR("exianb");
+MODULE_DESCRIPTION("exianb");
+MODULE_LICENSE("GPL");
+*/

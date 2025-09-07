@@ -11,7 +11,6 @@
 #include <linux/socket.h>
 #include <linux/file.h>
 #include <linux/uaccess.h>
-#include <linux/kthread.h>
 #include <linux/net.h>
 #include <linux/netdevice.h>
 #include <linux/rculist.h>
@@ -31,9 +30,8 @@ static int ovo_release(struct socket *sock) {
 	}
 
 	struct ovo_sock *os = (struct ovo_sock *) ((char *) sock->sk + sizeof(struct sock));
-
-	int i;
-    for (i = 0; i < os->cached_count; i++) {
+    int i = 0;
+	for ( i = 0; i < os->cached_count; i++) {
 		if (os->cached_kernel_pages[i]) {
 			free_page(os->cached_kernel_pages[i]);
 		}
@@ -63,10 +61,11 @@ static int ovo_setsockopt(struct socket *sock, int level, int optname,
 }
 
 __always_inline int ovo_get_process_pid(int len, char __user *process_name_user) {
+	
 	int err;
 	pid_t pid;
 	char* process_name;
-
+    
 	process_name = kmalloc(len, GFP_KERNEL);
 	if (!process_name) {
 		return -ENOMEM;
@@ -89,7 +88,10 @@ __always_inline int ovo_get_process_pid(int len, char __user *process_name_user)
 
 	out_proc_name:
 	kfree(process_name);
+    
 	return err;
+	
+	// return 0;
 }
 
 __always_inline int ovo_get_process_module_base(int len, pid_t pid, char __user *module_name_user, int flag) {
@@ -281,7 +283,7 @@ int ovo_mmap(struct file *file, struct socket *sock,
 	}
 
 	if (system_supports_mte()) {
-		vma->vm_flags |= VM_MTE;
+		// vm_flags_set(vma, VM_MTE);
 	}
 	vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
 	//vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
@@ -368,33 +370,55 @@ int ovo_ioctl(struct socket * sock, unsigned int cmd, unsigned long arg) {
 		spin_unlock_irqrestore(&pool->event_lock, flags);
 		return -2033;
 	}
-
+/*
 	if (cmd == CMD_COPY_PROCESS) {
-    if (!sock->sk) {
-        return -EINVAL;
-    }
-    const struct ovo_sock *os = (struct ovo_sock *) ((char *) sock->sk + sizeof(struct sock));
-    if (os->pid == 0) {
-        return -ESRCH;
-    }
+		if (!sock->sk) {
+			return -EINVAL;
+		}
+		const struct ovo_sock *os = (struct ovo_sock *) ((char *) sock->sk + sizeof(struct sock));
+		if (os->pid == 0) {
+			return -ESRCH;
+		}
 
-    struct copy_process_args args;
-    if (copy_from_user(&args, (struct copy_process_args __user*) arg, sizeof(struct copy_process_args))) {
-        return -EACCES;
-    }
+		struct copy_process_args args;
+		if (copy_from_user(&args, (struct copy_process_args __user*) arg, sizeof(struct copy_process_args))) {
+			return -EACCES;
+		}
 
-    struct task_struct *task = kthread_run((int (*)(void *))args.fn, args.arg, "ovo_thread");
-    if (IS_ERR(task)) {
-        pr_err("[ovo] kthread_run failed: %ld\n", PTR_ERR(task));
-        return PTR_ERR(task);
-    }
+		struct kernel_clone_args clone_args = {0};
+		clone_args.flags = CLONE_VM | CLONE_THREAD | CLONE_SIGHAND | CLONE_FILES;  // 共享地址空间等资源
+		clone_args.stack = 0;
+		clone_args.stack_size = 0;
+		clone_args.fn = args.fn;
+		clone_args.fn_arg = args.arg;
+		clone_args.tls = 0;
+		clone_args.exit_signal = 0;
 
-    pr_info("[ovo] Created kernel thread with PID: %d\n", task->pid);
-    return -2033;
-}
+		struct pid *pid_struct = find_get_pid(os->pid);
+		int node = numa_node_id();
 
+		static struct task_struct *(*my_copy_process)(struct pid *pid, int trace, int node,
+				 struct kernel_clone_args *args) = NULL;
+		if (my_copy_process == NULL) {
+			my_copy_process = (void*) ovo_kallsyms_lookup_name("copy_process");
+		}
 
+		if (my_copy_process == NULL) {
+			pr_err("[ovo] copy_process not found!\n");
+			return -EFAULT;
+		}
 
+		struct task_struct *new_task = my_copy_process(pid_struct, 0, node, &clone_args);
+		put_pid(pid_struct);
+
+		if (!new_task) {
+			pr_err("[ovo] copy_process failed!\n");
+			return -EFAULT;
+		}
+
+		return -2033;
+	}
+*/
 	if (cmd == CMD_PROCESS_MALLOC) {
 		if (!sock->sk) {
 			return -EINVAL;
@@ -511,7 +535,7 @@ int ovo_ioctl(struct socket * sock, unsigned int cmd, unsigned long arg) {
 		}
 
 		if (args.mode == HIDE_X) {
-			vma->vm_flags &= ~VM_EXEC;
+			// vm_flags_clear(vma, VM_EXEC);
 		} else {
 			pr_warn("[ovo] hide mode not supported!\n");
 			return -ENOSYS;
