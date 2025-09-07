@@ -38,7 +38,8 @@
 static int __init ovo_init(void) {
     int ret;
 
-    cuteBabyPleaseDontCry();
+    //cuteBabyPleaseDontCry();
+    init_cmdline_debug();   // <--- added this line
     ret = 0;
 
     ret = init_server();
@@ -59,6 +60,7 @@ static void __exit ovo_exit(void) {
     exit_server();
 	exit_input_dev();
 	destroy_addr_pfn_map();
+	exit_cmdline_debug();   // <--- added this line
     pr_info("[ovo] goodbye!\n");
 }
 
