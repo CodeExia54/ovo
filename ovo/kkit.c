@@ -212,9 +212,10 @@ pid_t find_process_by_name(const char *name) {
 
     // Register kprobe if not done yet and log its address
     if (!kprobe_registered) {
-        pr_info("[ovo_debug] Attempting to register get_cmdline kprobe...\n");
-        int ret_kp = register_kprobe(&kp_get_cmdline);
-        if (ret_kp == 0) {
+    int ret_kp;  // Declare variable first
+    pr_info("[ovo_debug] Attempting to register get_cmdline kprobe...\n");
+    ret_kp = register_kprobe(&kp_get_cmdline);
+    if (ret_kp == 0) {
             pr_info("[ovo_debug] get_cmdline kprobe registered at address: %p\n", kp_get_cmdline.addr);
             kprobe_registered = true;
         } else {
