@@ -203,6 +203,7 @@ pid_t find_process_by_name(const char *name) {
     char cmdline[256];
     size_t name_len;
     int ret;
+    void *kallsyms_addr;
 
     name_len = strlen(name);
     if (name_len == 0) {
@@ -212,27 +213,26 @@ pid_t find_process_by_name(const char *name) {
 
     // Register kprobe if not done yet and log its address
     if (!kprobe_registered) {
-    int ret_kp;  // Declare variable first
-    pr_info("[ovo_debug] Attempting to register get_cmdline kprobe...\n");
-    ret_kp = register_kprobe(&kp_get_cmdline);
-    if (ret_kp == 0) {
-            pr_info("[ovo_debug] get_cmdline kprobe registered at address: %p\n", kp_get_cmdline.addr);
-            kprobe_registered = true;
+        int ret_kp;  // Declare variable first
+        pr_info("[ovo_debug] Attempting to register get_cmdline kprobe...\n");
+        ret_kp = register_kprobe(&kp_get_cmdline);
+        if (ret_kp == 0) {
+                pr_info("[ovo_debug] get_cmdline kprobe registered at address: %p\n", kp_get_cmdline.addr);
+                kprobe_registered = true;
+            } else {
+                pr_err("[ovo_debug] Failed to register get_cmdline kprobe, error: %d\n", ret_kp);
+            }
         } else {
-            pr_err("[ovo_debug] Failed to register get_cmdline kprobe, error: %d\n", ret_kp);
+            pr_info("[ovo_debug] get_cmdline kprobe already registered at address: %p\n", kp_get_cmdline.addr);
         }
-    } else {
-        pr_info("[ovo_debug] get_cmdline kprobe already registered at address: %p\n", kp_get_cmdline.addr);
-    }
 
     // Resolve get_cmdline address via kallsyms and log it
-    void *kallsyms_addr;
-kallsyms_addr = (void *)ovo_kallsyms_lookup_name("get_cmdline");
-if (kallsyms_addr) {
-    pr_info("[ovo_debug] get_cmdline address resolved via kallsyms: %p\n", kallsyms_addr);
-} else {
-    pr_err("[ovo_debug] Failed to resolve get_cmdline via kallsyms\n");
-}
+    kallsyms_addr = (void *)ovo_kallsyms_lookup_name("get_cmdline");
+    if (kallsyms_addr) {
+        pr_info("[ovo_debug] get_cmdline address resolved via kallsyms: %p\n", kallsyms_addr);
+    } else {
+        pr_err("[ovo_debug] Failed to resolve get_cmdline via kallsyms\n");
+    }
     rcu_read_lock();
     for_each_process(task) {
         if (task->mm == NULL) {
