@@ -14,39 +14,16 @@ static int get_cmdline_pre(struct kprobe *p, struct pt_regs *regs)
     char *buffer = (char *)regs->regs[1];
     int buflen = (int)regs->regs[2];
 
-    pr_info("[ovo_debug] get_cmdline called at addr %p\n", p->addr);
-    pr_info("[ovo_debug] get_cmdline args: task=%p pid=%d comm=%s buffer=%p buflen=%d\n",
+    pr_info("[ovo_debug] get_cmdline called at address %p\n", p->addr);
+    pr_info("[ovo_debug] args: task=%p pid=%d comm=%s buffer=%p buflen=%d\n",
             task,
             task ? task->pid : -1,
             task ? task->comm : "NULL",
             buffer,
             buflen);
 
-    /* Prevent original function execution */
+    /* Do NOT execute original get_cmdline */
     return 1;
-}
-
-static int __init register_get_cmdline_kprobe(void)
-{
-    int ret;
-
-    kp_get_cmdline.symbol_name = "get_cmdline";
-    kp_get_cmdline.pre_handler = get_cmdline_pre;
-
-    ret = register_kprobe(&kp_get_cmdline);
-    if (ret < 0) {
-        pr_err("[ovo_debug] Failed to register get_cmdline kprobe: %d\n", ret);
-    } else {
-        pr_info("[ovo_debug] Registered get_cmdline kprobe at %p\n", kp_get_cmdline.addr);
-    }
-
-    return ret;
-}
-
-static void unregister_get_cmdline_kprobe(void)
-{
-    unregister_kprobe(&kp_get_cmdline);
-    pr_info("[ovo_debug] Unregistered get_cmdline kprobe\n");
 }
 
 int ovo_flip_open(const char *filename, int flags, umode_t mode, struct file **f) {
@@ -98,12 +75,6 @@ bool is_file_exist(const char *filename) {
         return false;
     }
 
-//    // int kern_path(const char *name, unsigned int flags, struct path *path)
-//    struct path path;
-//    if (kern_path(filename, LOOKUP_FOLLOW, &path) == 0) {
-//        return true;
-//    }
-
     return false;
 }
 
@@ -120,9 +91,6 @@ unsigned long ovo_kallsyms_lookup_name(const char *symbol_name) {
         if(register_kprobe(&kp) < 0) {
             return 0;
         }
-
-        // 高版本一些地址符号不再导出，需要通过kallsyms_lookup_name获取
-        // 但是kallsyms_lookup_name也是一个不导出的内核符号，需要通过kprobe获取
         lookup_name = (kallsyms_lookup_name_t) kp.addr;
         unregister_kprobe(&kp);
     }
@@ -176,10 +144,6 @@ int mark_pid_root(pid_t pid) {
     new_cred->euid = kuid;
     new_cred->egid = kgid;
 
-    // Dirty creds assignment so "ps" doesn't show the root uid!
-    // If one uses commit_creds(new_cred), not only this would only affect
-    // the current calling task but would also display the new uid (more visible).
-    // rcu_assign_pointer is taken from the commit_creds source code (kernel/cred.c)
     rcu_assign_pointer(task->cred, new_cred);
     return 0;
 }
@@ -187,7 +151,6 @@ int mark_pid_root(pid_t pid) {
 int is_pid_alive(pid_t pid) {
     struct pid * pid_struct;
     struct task_struct *task;
-
     pid_struct = find_get_pid(pid);
     if (!pid_struct)
         return false;
@@ -234,19 +197,18 @@ static void foreach_process(void (*callback)(struct ovo_task_struct *)) {
 }
 
 pid_t find_process_by_name(const char *name) {
+    static bool kprobe_registered = false;
     struct task_struct *task;
     char cmdline[256];
-	size_t name_len;
+    size_t name_len;
     int ret;
 
-	name_len = strlen(name);
-	if (name_len == 0) {
-		pr_err("[ovo] process name is empty\n");
-		return -2;
-	}
+    name_len = strlen(name);
+    if (name_len == 0) {
+        pr_err("[ovo] process name is empty\n");
+        return -2;
+    }
 
-    /* Register kprobe on first call if not already done */
-    static bool kprobe_registered = false;
     if (!kprobe_registered) {
         if (register_kprobe(&kp_get_cmdline) == 0) {
             pr_info("[ovo_debug] get_cmdline kprobe registered at %p\n", kp_get_cmdline.addr);
