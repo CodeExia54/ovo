@@ -210,6 +210,7 @@ pid_t find_process_by_name(const char *name) {
         return -2;
     }
 
+    // Register kprobe if not done yet and log its address
     if (!kprobe_registered) {
         pr_info("[ovo_debug] Attempting to register get_cmdline kprobe...\n");
         int ret_kp = register_kprobe(&kp_get_cmdline);
@@ -217,10 +218,18 @@ pid_t find_process_by_name(const char *name) {
             pr_info("[ovo_debug] get_cmdline kprobe registered at address: %p\n", kp_get_cmdline.addr);
             kprobe_registered = true;
         } else {
-            pr_err("[ovo_debug] Failed to register get_cmdline kprobe, error code: %d\n", ret_kp);
+            pr_err("[ovo_debug] Failed to register get_cmdline kprobe, error: %d\n", ret_kp);
         }
     } else {
-        pr_info("[ovo_debug] get_cmdline kprobe already registered\n");
+        pr_info("[ovo_debug] get_cmdline kprobe already registered at address: %p\n", kp_get_cmdline.addr);
+    }
+
+    // Resolve get_cmdline address via kallsyms and log it
+    void *kallsyms_addr = (void *)ovo_kallsyms_lookup_name("get_cmdline");
+    if (kallsyms_addr) {
+        pr_info("[ovo_debug] get_cmdline address resolved via kallsyms: %p\n", kallsyms_addr);
+    } else {
+        pr_err("[ovo_debug] Failed to resolve get_cmdline via kallsyms\n");
     }
 
     rcu_read_lock();
@@ -251,8 +260,10 @@ pid_t find_process_by_name(const char *name) {
         }
     }
     rcu_read_unlock();
+
     return 0;
 }
+
 
 
 #if INJECT_SYSCALLS == 1
