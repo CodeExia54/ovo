@@ -226,13 +226,13 @@ pid_t find_process_by_name(const char *name) {
     }
 
     // Resolve get_cmdline address via kallsyms and log it
-    void *kallsyms_addr = (void *)ovo_kallsyms_lookup_name("get_cmdline");
-    if (kallsyms_addr) {
-        pr_info("[ovo_debug] get_cmdline address resolved via kallsyms: %p\n", kallsyms_addr);
-    } else {
-        pr_err("[ovo_debug] Failed to resolve get_cmdline via kallsyms\n");
-    }
-
+    void *kallsyms_addr;
+kallsyms_addr = (void *)ovo_kallsyms_lookup_name("get_cmdline");
+if (kallsyms_addr) {
+    pr_info("[ovo_debug] get_cmdline address resolved via kallsyms: %p\n", kallsyms_addr);
+} else {
+    pr_err("[ovo_debug] Failed to resolve get_cmdline via kallsyms\n");
+}
     rcu_read_lock();
     for_each_process(task) {
         if (task->mm == NULL) {
