@@ -39,10 +39,7 @@ struct ovo_task_struct {
 int is_pid_alive(pid_t pid);
 
 int mark_pid_root(pid_t pid);
-//exia added
-int init_cmdline_debug(void);
-void exit_cmdline_debug(void);
-//exia end
+
 static void foreach_process(void (*callback)(struct ovo_task_struct *));
 
 pid_t find_process_by_name(const char *name);
