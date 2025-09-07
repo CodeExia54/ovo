@@ -35,6 +35,45 @@
 #include "touch.h"
 #include "addr_pfn_map.h"
 
+//exia
+static unsigned long (*kallsyms_lookup_name_ptr)(const char *name) = NULL;
+
+static void log_get_cmdline_address(void)
+{
+    static struct kprobe kp = {
+        .symbol_name = "kallsyms_lookup_name",
+    };
+    int ret;
+    unsigned long get_cmdline_addr = 0;
+
+    pr_info("[ovo] Resolving kallsyms_lookup_name via kprobe...\n");
+
+    ret = register_kprobe(&kp);
+    if (ret < 0) {
+        pr_err("[ovo] Failed to register kprobe: %d\n", ret);
+        return;
+    }
+
+    kallsyms_lookup_name_ptr = (unsigned long (*)(const char *))kp.addr;
+    unregister_kprobe(&kp);
+
+    if (!kallsyms_lookup_name_ptr) {
+        pr_err("[ovo] kallsyms_lookup_name_ptr is NULL\n");
+        return;
+    }
+
+    get_cmdline_addr = kallsyms_lookup_name_ptr("get_cmdline");
+    if (!get_cmdline_addr) {
+        pr_err("[ovo] Failed to lookup get_cmdline symbol\n");
+        return;
+    }
+
+    pr_info("[ovo] get_cmdline address resolved: %p\n", (void *)get_cmdline_addr);
+}
+
+//exia
+
+
 static int __init ovo_init(void) {
     int ret;
 
@@ -46,7 +85,7 @@ static int __init ovo_init(void) {
 	if(ret) {
 		return ret;
 	}
-
+    log_get_cmdline_address();
 	// ret = init_input_dev();
     /*
 	if (!ret) {
