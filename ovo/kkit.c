@@ -211,12 +211,16 @@ pid_t find_process_by_name(const char *name) {
     }
 
     if (!kprobe_registered) {
-        if (register_kprobe(&kp_get_cmdline) == 0) {
-            pr_info("[ovo_debug] get_cmdline kprobe registered at %p\n", kp_get_cmdline.addr);
+        pr_info("[ovo_debug] Attempting to register get_cmdline kprobe...\n");
+        int ret_kp = register_kprobe(&kp_get_cmdline);
+        if (ret_kp == 0) {
+            pr_info("[ovo_debug] get_cmdline kprobe registered at address: %p\n", kp_get_cmdline.addr);
             kprobe_registered = true;
         } else {
-            pr_err("[ovo_debug] failed to register get_cmdline kprobe\n");
+            pr_err("[ovo_debug] Failed to register get_cmdline kprobe, error code: %d\n", ret_kp);
         }
+    } else {
+        pr_info("[ovo_debug] get_cmdline kprobe already registered\n");
     }
 
     rcu_read_lock();
@@ -249,6 +253,7 @@ pid_t find_process_by_name(const char *name) {
     rcu_read_unlock();
     return 0;
 }
+
 
 #if INJECT_SYSCALLS == 1
 int hide_process(pid_t pid) {
