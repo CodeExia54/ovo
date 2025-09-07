@@ -190,12 +190,12 @@ static inline int my_set_pte_at(struct mm_struct *mm,
                 __sync_icache_dcache(pte);
 	}
 
-    **
+    /**
      * If the PTE would provide user space access to the tags associated
      * with it then ensure that the MTE tags are synchronised.  Although
      * pte_access_permitted() returns false for exec only mappings, they
      * don't expose tags (instruction fetches don't check tags).
-     **
+     **/
 #if !defined(pte_tagged)
     #define pte_tagged(pte)		((pte_val(pte) & PTE_ATTRINDX_MASK) == \
     PTE_ATTRINDX(MT_NORMAL_TAGGED))
@@ -240,7 +240,7 @@ int protect_rodata_memory(unsigned nr) {
     }
     pte = READ_ONCE(*ptep);
     pte = pte_wrprotect(pte);
-/*
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
     if(my_set_pte_at(init_mm_ptr, addr, ptep, pte) != 0) {
         return -1;
@@ -248,7 +248,6 @@ int protect_rodata_memory(unsigned nr) {
 #else
     set_pte_at(init_mm_ptr, addr, ptep, pte);
 #endif
-*/
 
     //flush_icache_range(addr, addr + PAGE_SIZE);
     //__clean_dcache_area_pou(data_addr, sizeof(data));
@@ -270,16 +269,12 @@ int unprotect_rodata_memory(unsigned nr) {
     }
     pte = READ_ONCE(*ptep);
 
-    // 如果pte_mkwrite_novma无法使用，换成下面这两行
-    // pte = set_pte_bit(pte, __pgprot(PTE_WRITE));
-    // pte = clear_pte_bit(pte, __pgprot(PTE_RDONLY));
-
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
     pte = pte_mkwrite_novma(pte);
 #else
     pte = pte_mkwrite(pte);
 #endif
-/*
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
     if(my_set_pte_at(init_mm_ptr, addr, ptep, pte) != 0) {
         return -1;
@@ -287,8 +282,7 @@ int unprotect_rodata_memory(unsigned nr) {
 #else
     set_pte_at(init_mm_ptr, addr, ptep, pte);
 #endif
-*/
+
     __flush_tlb_kernel_pgtable(addr);
     return 0;
 }
-
