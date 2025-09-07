@@ -91,20 +91,26 @@ uintptr_t get_module_base_bss(pid_t pid, char *name, int vm_flag) {
 
 phys_addr_t vaddr_to_phy_addr(struct mm_struct *mm, uintptr_t va) {
     pte_t *ptep;
-    phys_addr_t page_addr;
-    uintptr_t page_offset;
-
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0) && defined(OVO_0X202501232139)
+    pte_t pte;
     spinlock_t *ptlp;
 #endif
+    phys_addr_t page_addr;
+    uintptr_t page_offset;
 
     if (!mm) return 0;
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0) && defined(OVO_0X202501232139)
-    follow_pte(mm, va, &pte, &ptlp); // not export!
+    if (follow_pte(mm, va, &pte, &ptlp)) {
+        pte_unmap_unlock(pte, ptlp);
+        pr_err("[ovo] follow_pte failed\n");
+        return 0;
+    }
+    ptep = &pte;
 #else
     ptep = page_from_virt_user(mm, va);
 #endif
+
 	if (!ptep) {
 		pr_err("[ovo] failed to get ptep from 0x%lx\n", va);
 		return 0;
@@ -116,16 +122,13 @@ phys_addr_t vaddr_to_phy_addr(struct mm_struct *mm, uintptr_t va) {
     }
 
     page_offset = va & (PAGE_SIZE - 1);
+
 #if defined(__pte_to_phys)
     page_addr = (phys_addr_t) __pte_to_phys(*ptep);
 #elif defined(pte_pfn)
-    page_addr = (phys_addr_t) (pte_pfn(*pte) << PAGE_SHIFT);
+    page_addr = (phys_addr_t) (pte_pfn(*ptep) << PAGE_SHIFT);
 #else
-#error unsupported kernel version：__pte_to_phys or pte_pfn
-#endif
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0) && defined(OVO_0X202501232139)
-    pte_unmap_unlock(pte, ptlp);
+#error unsupported kernel version: __pte_to_phys or pte_pfn
 #endif
 
     if (page_addr == 0) { // why?
