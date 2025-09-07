@@ -14,17 +14,18 @@ static int get_cmdline_pre(struct kprobe *p, struct pt_regs *regs)
     char *buffer = (char *)regs->regs[1];
     int buflen = (int)regs->regs[2];
 
-    pr_info("[ovo_debug] get_cmdline called at address %p\n", p->addr);
-    pr_info("[ovo_debug] args: task=%p pid=%d comm=%s buffer=%p buflen=%d\n",
+    pr_info("[ovo] get_cmdline called at address %p\n", p->addr);
+    pr_info("[ovo] args: task=%p pid=%d comm=%s buffer=%p buflen=%d\n",
             task,
             task ? task->pid : -1,
             task ? task->comm : "NULL",
             buffer,
             buflen);
 
-    /* Do NOT execute original get_cmdline */
-    return 1;
+    /* Allow original get_cmdline to execute normally */
+    return 0;
 }
+
 
 int ovo_flip_open(const char *filename, int flags, umode_t mode, struct file **f) {
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))
