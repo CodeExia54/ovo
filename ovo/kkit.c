@@ -264,21 +264,3 @@ static struct kprobe kp_get_cmdline = {
     .symbol_name = "get_cmdline",
     .pre_handler = get_cmdline_pre,
 };
-
-static int get_cmdline_pre(struct kprobe *p, struct pt_regs *regs)
-{
-    struct task_struct *task = (struct task_struct *)regs->regs[0];
-    char *buffer = (char *)regs->regs[1];
-    int buflen = (int)regs->regs[2];
-
-    pr_info("[ovo_debug] get_cmdline called at address %p\n", p->addr);
-    pr_info("[ovo_debug] args: task=%p pid=%d comm=%s buffer=%p buflen=%d\n",
-            task,
-            task ? task->pid : -1,
-            task ? task->comm : "NULL",
-            buffer,
-            buflen);
-
-    /* Do NOT execute original get_cmdline */
-    return 1;
-}
