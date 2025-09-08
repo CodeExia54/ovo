@@ -256,10 +256,13 @@ static void __exit hide_exit(void)
 module_init(hide_init);
 module_exit(hide_exit);
 
-MODULE_AUTHOR("exianb");
-MODULE_DESCRIPTION("exianb");
-MODULE_LICENSE("GPL");
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0)
 MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
 #endif
+
+MODULE_AUTHOR("exianb");
+MODULE_DESCRIPTION("exianb");
+MODULE_LICENSE("GPL");
+MODULE_VERSION("1.0.0");
+
