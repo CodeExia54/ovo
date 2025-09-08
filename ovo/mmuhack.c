@@ -164,7 +164,8 @@ static inline int my_set_pte_at(struct mm_struct *mm,
                                  uintptr_t __always_unused addr,
                                  pte_t *ptep, pte_t pte)
 {
-	/*
+    // All cache/MTE synchronization code commented to avoid unknown symbol errors.
+    /*
     typedef void (*f__sync_icache_dcache)(pte_t pteval);
     typedef void (*f_mte_sync_tags)(pte_t pte, unsigned int nr_pages);
 
@@ -183,19 +184,14 @@ static inline int my_set_pte_at(struct mm_struct *mm,
 #define pte_user_exec(pte)	(!(pte_val(pte) & PTE_UXN))
 #endif
 
-	if (__sync_icache_dcache == NULL) {
-		pr_warn("[ovo] symbol `__sync_icache_dcache` not found\n");
-	} else {
-		if (pte_present(pte) && pte_user_exec(pte) && !pte_special(pte))
-                __sync_icache_dcache(pte);
-	}
+    if (__sync_icache_dcache == NULL) {
+        pr_warn("[ovo] symbol `__sync_icache_dcache` not found\n");
+    } else {
+        if (pte_present(pte) && pte_user_exec(pte) && !pte_special(pte))
+            __sync_icache_dcache(pte);
+    }
 
-    /**
-     * If the PTE would provide user space access to the tags associated
-     * with it then ensure that the MTE tags are synchronised.  Although
-     * pte_access_permitted() returns false for exec only mappings, they
-     * don't expose tags (instruction fetches don't check tags).
-     **/
+    // MTE tag sync (safe to skip if not found)
 #if !defined(pte_tagged)
     #define pte_tagged(pte)		((pte_val(pte) & PTE_ATTRINDX_MASK) == \
     PTE_ATTRINDX(MT_NORMAL_TAGGED))
@@ -212,7 +208,7 @@ static inline int my_set_pte_at(struct mm_struct *mm,
         }
         mte_sync_tags(pte, 1);
     }
-
+    */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
     __check_safe_pte_update(mm, ptep, pte);
     __set_pte(ptep, pte);
@@ -220,7 +216,6 @@ static inline int my_set_pte_at(struct mm_struct *mm,
     __check_racy_pte_update(mm, ptep, pte);
     set_pte(ptep, pte);
 #endif
-	*/
     return 0;	
 }
 #endif
