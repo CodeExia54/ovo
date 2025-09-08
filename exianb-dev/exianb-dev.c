@@ -27,7 +27,7 @@
 #include <linux/kprobes.h>
 
 /* ---- universal helper -------------------------------------------- */
-#include "kprobe_kallsyms.h"
+#include "kprobekallsyms.h"
 /* Use ONLY the by-name resolver (resolved via kprobe). */
 #define klookup(name)  ksym_lookup_name_log(name)   /* logs each resolve */
 /* ------------------------------------------------------------------ */
