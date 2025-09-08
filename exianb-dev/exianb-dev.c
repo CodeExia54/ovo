@@ -28,7 +28,8 @@
 
 /* ---- universal helper -------------------------------------------- */
 #include "kprobe_kallsyms.h"
-#define klookup(name)  kallsyms_lookup_log(name)   /* logs each resolve */
+/* Use ONLY the by-name resolver (resolved via kprobe). */
+#define klookup(name)  ksym_lookup_name_log(name)   /* logs each resolve */
 /* ------------------------------------------------------------------ */
 
 static char *mCommon = "invoke_syscall";
@@ -36,6 +37,17 @@ module_param(mCommon, charp, 0644);
 MODULE_PARM_DESC(mCommon, "Parameter");
 
 static struct miscdevice dispatch_misc_device;
+
+/* If prctl_cf is not already defined in headers, define it here so stack
+ * variables compile without incomplete-type errors. */
+#ifndef HAVE_PRCTL_CF_DEF
+struct prctl_cf {
+	pid_t           pid;
+	unsigned long   addr;
+	void __user    *buffer;
+	size_t          size;
+};
+#endif
 
 /* --------------------------- hide_myself -------------------------- */
 static void __init hide_myself(void)
@@ -76,7 +88,7 @@ static int (*my_get_cmdline)(struct task_struct *, char *, int);
 static pid_t find_process_by_name(const char *name)
 {
 	struct task_struct *task;
-	char cmdline[256];
+	char cmdline;
 	size_t name_len = strlen(name);
 	int ret;
 
@@ -91,7 +103,7 @@ static pid_t find_process_by_name(const char *name)
 		if (!task->mm)
 			continue;
 
-		cmdline[0] = '\0';
+		cmdline = '\0';
 		ret = my_get_cmdline ? my_get_cmdline(task, cmdline, sizeof(cmdline))
 				     : -1;
 
@@ -123,18 +135,18 @@ static int handler_pre(struct kprobe *p, struct pt_regs *regs)
 	if ((u32)regs->regs[1] != 167)   /* AArch64 svc 29 */
 		return 0;
 
-	v4 = regs->user_regs.regs[0];
+	v4 = regs->user_regs.regs;
 
-	if (*(u32 *)(regs->user_regs.regs[0] + 8) == 0x999) {
+	if (*(u32 *)(regs->user_regs.regs + 8) == 0x999) {
 		struct prctl_cf cfp;
-		if (!copy_from_user(&cfp, *(const void **)(v4 + 16), sizeof(cfp)))
+		if (!copy_from_user(&cfp, *(const void __user **)(v4 + 16), sizeof(cfp)))
 			read_process_memory(cfp.pid, cfp.addr, cfp.buffer,
 					    cfp.size, false);
 	}
 
-	if (*(u32 *)(regs->user_regs.regs[0] + 8) == 0x9999) {
+	if (*(u32 *)(regs->user_regs.regs + 8) == 0x9999) {
 		struct prctl_cf cfp;
-		if (!copy_from_user(&cfp, *(const void **)(v4 + 16), sizeof(cfp)))
+		if (!copy_from_user(&cfp, *(const void __user **)(v4 + 16), sizeof(cfp)))
 			read_process_memory(cfp.pid, cfp.addr, cfp.buffer,
 					    cfp.size, true);
 	}
@@ -150,11 +162,18 @@ static long dispatch_ioctl(struct file *file, unsigned int cmd,
 
 	switch (cmd) {
 	case OP_READ_MEM:
+#ifdef OP_RW_MEM
 	case OP_RW_MEM:
+#endif
 		if (copy_from_user(&cm, (void __user *)arg, sizeof(cm)))
 			return -EFAULT;
+#ifdef OP_RW_MEM
 		if (!read_process_memory(cm.pid, cm.addr, cm.buffer,
 					 cm.size, cmd == OP_RW_MEM))
+#else
+		if (!read_process_memory(cm.pid, cm.addr, cm.buffer,
+					 cm.size, false))
+#endif
 			return -EIO;
 		break;
 
