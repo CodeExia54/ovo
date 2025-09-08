@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL
-#include "kprobe-kallsyms.h"
+#include "kprobekallsyms.h"
 #include <linux/kernel.h>
 #include <linux/printk.h>
 
