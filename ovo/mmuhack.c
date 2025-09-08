@@ -77,7 +77,7 @@ pte_t *page_from_virt_kernel(unsigned long addr) {
         return NULL;
     }
 
-    //pr_debug("[ovo] page_from_virt succes, virt (0x%lx), ptep @ %lx", (uintptr_t) addr, (uintptr_t) ptep);
+    pr_debug("[ovo] page_from_virt succes, virt (0x%lx), ptep @ %lx", (uintptr_t) addr, (uintptr_t) ptep);
     return ptep;
 }
 
@@ -90,10 +90,10 @@ pte_t *page_from_virt_user(struct mm_struct *mm, unsigned long addr) {
 
     follow_pte(mm, addr, &pte, &ptlp);
 
-    //pte_unmap_unlock(pte, ptlp);
+    pte_unmap_unlock(pte, ptlp);
 
-     //if (ptlp)
-     //   spin_unlock(ptlp);
+     if (ptlp)
+        spin_unlock(ptlp);
 #error "OVO_0X202501232117"
     return pte;
 }
@@ -164,7 +164,7 @@ static inline int my_set_pte_at(struct mm_struct *mm,
                                  uintptr_t __always_unused addr,
                                  pte_t *ptep, pte_t pte)
 {
-	/*
+	
     typedef void (*f__sync_icache_dcache)(pte_t pteval);
     typedef void (*f_mte_sync_tags)(pte_t pte, unsigned int nr_pages);
 
