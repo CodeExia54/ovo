@@ -120,36 +120,47 @@ bool read_process_memory(
     pid_t pid, 
     uintptr_t addr, 
     void* buffer, 
-    size_t size) {
+    size_t size,
+    bool isWrite) {
     
     struct task_struct* task;
     struct mm_struct* mm;
     struct pid* pid_struct;
-    struct vm_area_struct* vma;
+    // struct vm_area_struct* vma;
     phys_addr_t pa;
 
-    //pr_info("read_process_memory - pid: %d, addr: %lx, size: %zu\n", pid, addr, size);
+    // pr_info("read_process_memory - pid: %d, addr: %lx, size: %zu\n", pid, addr, size);
     pid_struct = find_get_pid(pid);
     if (!pid_struct) {
-        pr_err("read_process_memory pid_struct failed.\n");
+        pr_err("pvm: a-read_process_memory pid_struct failed.\n");
         return false;
     }
 	task = get_pid_task(pid_struct, PIDTYPE_PID);
 	if (!task) {
-        pr_err("read_process_memory task failed.\n");
+        pr_err("pvm: a-read_process_memory task failed.\n");
         return false;
     }
 	mm = get_task_mm(task);
     if (!mm) {
-        pr_err("read_process_memory mm failed.\n");
+        pr_err("pvm: a-read_process_memory mm failed.\n");
         return false;
     }
+    /*
     vma = find_vma(mm, addr);
-    if(!vma || (vma->vm_flags & VM_READ) == 0 || (addr + size) > vma->vm_end){
-        mmput(mm);
-        pr_err("read_process_memory vma failed.\n");
-        return false;
+    if(isWrite) {
+        if(!vma || (vma->vm_flags & VM_WRITE) == 0 || (addr + size) > vma->vm_end){
+            mmput(mm);
+            pr_err("pvm: a-read_process_memory vma failed (write).\n");
+            return false;
+	}
+    } else {
+        if(!vma || (vma->vm_flags & VM_READ) == 0 || (addr + size) > vma->vm_end){
+            mmput(mm);
+            pr_err("pvm: a-read_process_memory vma failed.\n");
+            return false;
+        }
     }
+    */
     mmput(mm);
     pa = translate_linear_address(mm, addr);
     if (!pa) {
