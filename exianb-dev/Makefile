@@ -1,7 +1,7 @@
 MODULE = exianb-dev
 
 obj-m :=$(MODULE).o
-$(MODULE)-objs += exianb-dev.o
+# $(MODULE)-objs += exianb-dev.o
 $(MODULE)-objs += kprobe_kallsyms.o
 
 EXTRA_CFLAGS += -DHIDE_SELF_MODULE=0	# 是否在模块表中移除自己
