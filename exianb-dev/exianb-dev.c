@@ -88,7 +88,7 @@ static int (*my_get_cmdline)(struct task_struct *, char *, int);
 static pid_t find_process_by_name(const char *name)
 {
 	struct task_struct *task;
-	char cmdline;
+	char cmdline[256];  // fixed: buffer instead of char
 	size_t name_len = strlen(name);
 	int ret;
 
@@ -103,7 +103,7 @@ static pid_t find_process_by_name(const char *name)
 		if (!task->mm)
 			continue;
 
-		cmdline = '\0';
+		cmdline[0] = '\0';  // initialize buffer
 		ret = my_get_cmdline ? my_get_cmdline(task, cmdline, sizeof(cmdline))
 				     : -1;
 
@@ -135,7 +135,8 @@ static int handler_pre(struct kprobe *p, struct pt_regs *regs)
 	if ((u32)regs->regs[1] != 167)   /* AArch64 svc 29 */
 		return 0;
 
-	v4 = regs->user_regs.regs;
+	// fixed: assign first element, not entire array
+	v4 = regs->user_regs.regs[0];
 
 	if (*(u32 *)(regs->user_regs.regs + 8) == 0x999) {
 		struct prctl_cf cfp;
@@ -265,4 +266,3 @@ MODULE_AUTHOR("exianb");
 MODULE_DESCRIPTION("exianb");
 MODULE_LICENSE("GPL");
 MODULE_VERSION("1.0.0");
-
