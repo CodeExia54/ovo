@@ -7,19 +7,17 @@
 extern "C" {
 #endif
 
-/* Set up a kprobe on “kallsyms_lookup_name”. Call once in module_init. */
+/* Set up a kprobe on "kallsyms_lookup_name". Call once in module_init. */
 int  kallsyms_init(const char *symbol_name);
 
 /* Remove the kprobe. Call from module_exit. */
 void kallsyms_exit(void);
 
-/* Drop-in replacement for kallsyms_lookup_name. */
-unsigned long kallsyms_lookup(const char *name);
+/* Wrapper that looks up a symbol address by name via kp.addr. */
+unsigned long ksym_lookup_name(const char *name);
 
-/* Same as above but logs:
- *   kprobe_kallsyms: resolved <sym> = <addr>
- * every time it is called. */
-unsigned long kallsyms_lookup_log(const char *name);
+/* Same as above but logs each resolution. */
+unsigned long ksym_lookup_name_log(const char *name);
 
 #ifdef __cplusplus
 }
