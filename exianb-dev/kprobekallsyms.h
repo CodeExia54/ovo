@@ -1,5 +1,5 @@
-#ifndef KPROBE_KALLSYMS_H
-#define KPROBE_KALLSYMS_H
+#ifndef KPROBEKALLSYMS_H
+#define KPROBEKALLSYMS_H
 
 #include <linux/kprobes.h>
 
