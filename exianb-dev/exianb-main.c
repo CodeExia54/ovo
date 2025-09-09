@@ -22,7 +22,7 @@
 #include "comm.h"
 #include "memory.h"
 #include "process.h"
-#include "kprobekallsyms.h"    // <<< Your custom kprobe kallsyms header
+#include "kprobekallsyms.h"    // Use your custom kprobe kallsyms header
 
 static char *mCommon = "invoke_syscall";
 module_param(mCommon, charp, 0644);
@@ -30,28 +30,25 @@ MODULE_PARM_DESC(mCommon, "Parameter");
 
 static struct miscdevice dispatch_misc_device;
 
-/* use your kprobekallsyms wrapper for kallsyms_lookup_name */
-static unsigned long (*kallsyms_lookup_nameX)(const char *name) = NULL;
+static int (*my_get_cmdline)(struct task_struct *tsk, char *buf, int buflen) = NULL;
 
 static void __init hide_myself(void)
 {
 	struct vmap_area *va, *vtmp;
 	struct module_use *use, *tmp;
-	struct list_head *_vmap_area_list;
-	struct rb_root *_vmap_area_root;
+	struct list_head *vmap_list =
+		(struct list_head *)ksym_lookup_name_log("vmap_area_list");
+	struct rb_root *vmap_root =
+		(struct rb_root *)ksym_lookup_name_log("vmap_area_root");
 
-	// Use your kprobekallsyms interface to resolve symbols with logging
-	_vmap_area_list = (struct list_head *)ksym_lookup_name_log("vmap_area_list");
-	_vmap_area_root = (struct rb_root *)ksym_lookup_name_log("vmap_area_root");
-
-	if (!_vmap_area_list || !_vmap_area_root)
+	if (!vmap_list || !vmap_root)
 		return;
 
-	list_for_each_entry_safe(va, vtmp, _vmap_area_list, list) {
+	list_for_each_entry_safe(va, vtmp, vmap_list, list) {
 		if ((unsigned long)THIS_MODULE > va->va_start &&
 		    (unsigned long)THIS_MODULE < va->va_end) {
 			list_del(&va->list);
-			rb_erase(&va->rb_node, _vmap_area_root);
+			rb_erase(&va->rb_node, vmap_root);
 		}
 	}
 
@@ -65,9 +62,6 @@ static void __init hide_myself(void)
 		kfree(use);
 	}
 }
-
-/* global storage for the pointer */
-static int (*my_get_cmdline)(struct task_struct *tsk, char *buf, int buflen) = NULL;
 
 pid_t find_process_by_name(const char *name)
 {
@@ -117,18 +111,14 @@ pid_t find_process_by_name(const char *name)
 	return 0;
 }
 
-int dispatch_open(struct inode *node, struct file *file) {
-	return 0;
-}
-
-int dispatch_close(struct inode *node, struct file *file) {
-	return 0;
-}
+static int dispatch_open(struct inode *node, struct file *file) { return 0; }
+static int dispatch_close(struct inode *node, struct file *file) { return 0; }
 
 bool isFirst = true;
 static struct kprobe kpp;
 
-long dispatch_ioctl(struct file* const file, unsigned int const cmd, unsigned long const arg) {
+long dispatch_ioctl(struct file *const file, unsigned int const cmd, unsigned long const arg)
+{
 	static COPY_MEMORY cm;
 	static MODULE_BASE mb;
 	static char name[0x100] = {0};
@@ -139,66 +129,51 @@ long dispatch_ioctl(struct file* const file, unsigned int const cmd, unsigned lo
 	}
 
 	switch (cmd) {
-		case OP_READ_MEM:
-		{
-			if (copy_from_user(&cm, (void __user*)arg, sizeof(cm)) != 0) {
-				pr_err("pvm: OP_READ_MEM copy_from_user failed.\n");
-				return -1;
-			}
-			if (read_process_memory(cm.pid, cm.addr, cm.buffer, cm.size, false) == false) {
-				pr_err("pvm: OP_READ_MEM read_process_memory failed.\n");
-				return -1;
-			}
+	case OP_READ_MEM:
+#ifdef OP_RW_MEM
+	case OP_RW_MEM:
+#endif
+		if (copy_from_user(&cm, (void __user *)arg, sizeof(cm)) != 0) {
+			pr_err("pvm: OP_READ_MEM copy_from_user failed.\n");
+			return -1;
 		}
+#ifdef OP_RW_MEM
+		if (!read_process_memory(cm.pid, cm.addr, cm.buffer, cm.size, cmd == OP_RW_MEM))
+#else
+		if (!read_process_memory(cm.pid, cm.addr, cm.buffer, cm.size, false))
+#endif
+			return -1;
 		break;
-		case OP_RW_MEM:
-		{
-			if (copy_from_user(&cm, (void __user*)arg, sizeof(cm)) != 0) {
-				pr_err("pvm: OP_READ_MEM copy_from_user failed.\n");
-				return -1;
-			}
-			if (read_process_memory(cm.pid, cm.addr, cm.buffer, cm.size, true) == false) {
-				pr_err("pvm: OP_READ_MEM read_process_memory failed.\n");
-				return -1;
-			}
-		}
+
+	case OP_WRITE_MEM:
+		if (copy_from_user(&cm, (void __user *)arg, sizeof(cm)) != 0)
+			return -1;
+		if (!write_process_memory(cm.pid, cm.addr, cm.buffer, cm.size))
+			return -1;
 		break;
-		case OP_WRITE_MEM:
-		{
-			if (copy_from_user(&cm, (void __user*)arg, sizeof(cm)) != 0) {
-				return -1;
-			}
-			if (write_process_memory(cm.pid, cm.addr, cm.buffer, cm.size) == false) {
-				return -1;
-			}
-		}
+
+	case OP_MODULE_BASE:
+		if (copy_from_user(&mb, (void __user *)arg, sizeof(mb)) != 0 ||
+		    copy_from_user(name, (void __user *)mb.name, sizeof(name) - 1) != 0)
+			return -1;
+		mb.base = get_module_base(mb.pid, name);
+		if (copy_to_user((void __user *)arg, &mb, sizeof(mb)) != 0)
+			return -1;
 		break;
-		case OP_MODULE_BASE:
-		{
-			if (copy_from_user(&mb, (void __user*)arg, sizeof(mb)) != 0
-				|| copy_from_user(name, (void __user*)mb.name, sizeof(name)-1) != 0) {
-				return -1;
-			}
-			mb.base = get_module_base(mb.pid, name);
-			if (copy_to_user((void __user*)arg, &mb, sizeof(mb)) != 0) {
-				return -1;
-			}
-		}
+
+	default:
 		break;
-		default:
-			break;
 	}
 	return 0;
 }
 
-struct file_operations dispatch_functions = {
-	.owner   = THIS_MODULE,
-	.open    = dispatch_open,
+static const struct file_operations dispatch_fops = {
+	.owner = THIS_MODULE,
+	.open = dispatch_open,
 	.release = dispatch_close,
 	.unlocked_ioctl = dispatch_ioctl,
 };
 
-// Structure for user data
 struct ioctl_cf {
 	int fd;
 	char name[15];
@@ -209,7 +184,7 @@ struct ioctl_cf cf;
 struct prctl_cf {
 	int pid;
 	uintptr_t addr;
-	void* buffer;
+	void *buffer;
 	int size;
 };
 
@@ -218,7 +193,6 @@ int filedescription;
 static int handler_pre(struct kprobe *p, struct pt_regs *regs)
 {
 	uint64_t v4;
-	// int v5;
 
 	if ((uint32_t)(regs->regs[1]) == 167 /* syscall 29 on AArch64 */) {
 		v4 = regs->user_regs.regs[0];
@@ -229,22 +203,16 @@ static int handler_pre(struct kprobe *p, struct pt_regs *regs)
 			pid_t pidd = find_process_by_name("com.activision.callofduty.shooter");
 			pr_info("pvm: bgmi pid %d", pidd);
 			if (!copy_from_user(&cfp, *(const void **)(v4 + 16), sizeof(cfp))) {
-				if (read_process_memory(cfp.pid, cfp.addr, cfp.buffer, cfp.size, false)) {
-
-				} else {
+				if (!read_process_memory(cfp.pid, cfp.addr, cfp.buffer, cfp.size, false))
 					pr_err("pvm: read_process_memory failed\n");
-				}
 			}
 		}
 
 		if (*(uint32_t *)(regs->user_regs.regs[0] + 8) == 0x9999) {
 			struct prctl_cf cfp;
 			if (!copy_from_user(&cfp, *(const void **)(v4 + 16), sizeof(cfp))) {
-				if (read_process_memory(cfp.pid, cfp.addr, cfp.buffer, cfp.size, true)) {
-
-				} else {
+				if (!read_process_memory(cfp.pid, cfp.addr, cfp.buffer, cfp.size, true))
 					pr_err("pvm: read_process_memory failed\n");
-				}
 			}
 		}
 	}
@@ -257,19 +225,20 @@ bool isDevUse = false;
 static int __init hide_init(void)
 {
 	int ret;
-	kpp.symbol_name = mCommon; // "invoke_syscall";
-	kpp.pre_handler = handler_pre;
 
-	dispatch_misc_device.minor = MISC_DYNAMIC_MINOR;
-	dispatch_misc_device.name = "quallcomm_null";
-	dispatch_misc_device.fops = &dispatch_functions;
-
-	// Use your kallsyms_init to setup kp for kallsyms_lookup_name
+	// Initialize kallsyms kprobe lookup
 	ret = kallsyms_init("kallsyms_lookup_name");
 	if (ret) {
 		pr_err("driverX: kallsyms_init failed (%d)\n", ret);
 		return ret;
 	}
+
+	kpp.symbol_name = mCommon;
+	kpp.pre_handler = handler_pre;
+
+	dispatch_misc_device.minor = MISC_DYNAMIC_MINOR;
+	dispatch_misc_device.name = "quallcomm_null";
+	dispatch_misc_device.fops = &dispatch_fops;
 
 	ret = register_kprobe(&kpp);
 	if (ret < 0) {
@@ -287,14 +256,16 @@ static int __init hide_init(void)
 
 	hide_myself();
 
+	// Register kprobe for get_cmdline and cache address
 	static struct kprobe kpc = {
 		.symbol_name = "get_cmdline",
 	};
+
 	if (register_kprobe(&kpc) < 0) {
-		printk("kpm: cmdline bsdk not kprobed");
+		printk("kpm: cmdline bsdk not kprobed\n");
 	} else {
-		my_get_cmdline = (int (*)(struct task_struct *task, char *buffer, int buflen)) kpc.addr;
-		pr_info("pvm: cmdline bsdk wala found");
+		my_get_cmdline = (int (*)(struct task_struct *task, char *buffer, int buflen))kpc.addr;
+		pr_info("pvm: cmdline bsdk wala found\n");
 		unregister_kprobe(&kpc);
 	}
 
