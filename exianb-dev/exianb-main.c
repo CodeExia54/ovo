@@ -32,7 +32,7 @@ static struct miscdevice dispatch_misc_device;
 
 static int (*my_get_cmdline)(struct task_struct *tsk, char *buf, int buflen) = NULL;
 
-static void __init hide_myself(void)
+/*static void __init hide_myself(void)
 {
 	struct vmap_area *va, *vtmp;
 	struct module_use *use, *tmp;
@@ -61,7 +61,7 @@ static void __init hide_myself(void)
 		sysfs_remove_link(use->target->holders_dir, THIS_MODULE->name);
 		kfree(use);
 	}
-}
+}*/
 
 pid_t find_process_by_name(const char *name)
 {
@@ -226,37 +226,49 @@ static int __init hide_init(void)
 {
 	int ret;
 
-	// Initialize kallsyms: this caches pointer and unregisters kprobe immediately
+	// Initialize kallsyms: cache pointer and unregister kprobe
 	ret = kallsyms_init("kallsyms_lookup_name");
 	if (ret) {
 		pr_err("driverX: kallsyms_init failed (%d)\n", ret);
 		return ret;
 	}
 
-	// Now your ksym_lookup_name_log() uses cached pointer, just like the old method
+	// Check if mCommon is valid string before using
+	if (!mCommon || strlen(mCommon) == 0) {
+		pr_err("driverX: mCommon parameter is NULL or empty! Module load aborted.\n");
+		return -EINVAL;
+	}
 
+	pr_info("driverX: Registering kprobe on symbol: %s (pointer %px)\n", mCommon, mCommon);
 	kpp.symbol_name = mCommon;
 	kpp.pre_handler = handler_pre;
 
 	dispatch_misc_device.minor = MISC_DYNAMIC_MINOR;
 	dispatch_misc_device.name = "quallcomm_null";
-	dispatch_misc_device.fops = &dispatch_fops;
+	dispatch_misc_device.fops = &dispatch_functions;
 
 	ret = register_kprobe(&kpp);
 	if (ret < 0) {
-		pr_err("driverX: Failed to register kprobe: %d (%s)\n", ret, kpp.symbol_name);
+		pr_err("driverX: Failed to register kprobe on %s: %d\n", kpp.symbol_name, ret);
+
+		// Fallback to invoke_syscall
 		kpp.symbol_name = "invoke_syscall";
-		kpp.pre_handler = handler_pre;
+		pr_info("driverX: Trying fallback symbol: invoke_syscall\n");
 		ret = register_kprobe(&kpp);
 		if (ret < 0) {
+			pr_err("driverX: Failed to register kprobe on fallback invoke_syscall: %d\n", ret);
+
+			// Fallback to misc device interface
 			isDevUse = true;
 			ret = misc_register(&dispatch_misc_device);
-			pr_err("driverX: Failed to register kprobe: %d (%s) using dev\n", ret, kpp.symbol_name);
-			return ret;
+			pr_err("driverX: Registered misc device fallback, result: %d\n", ret);
+
+			if (ret < 0)
+				return ret; // Abort module load if fallback fails
 		}
 	}
 
-	hide_myself();
+	//hide_myself();
 
 	// Register kprobe for get_cmdline and cache address
 	static struct kprobe kpc = {
