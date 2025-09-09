@@ -226,12 +226,14 @@ static int __init hide_init(void)
 {
 	int ret;
 
-	// Initialize kallsyms kprobe lookup
+	// Initialize kallsyms: this caches pointer and unregisters kprobe immediately
 	ret = kallsyms_init("kallsyms_lookup_name");
 	if (ret) {
 		pr_err("driverX: kallsyms_init failed (%d)\n", ret);
 		return ret;
 	}
+
+	// Now your ksym_lookup_name_log() uses cached pointer, just like the old method
 
 	kpp.symbol_name = mCommon;
 	kpp.pre_handler = handler_pre;
