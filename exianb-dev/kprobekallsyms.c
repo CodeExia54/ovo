@@ -4,6 +4,7 @@
 #include <linux/printk.h>
 
 static struct kprobe kp = { .symbol_name = NULL };
+static unsigned long (*kallsyms_lookup_name_func)(const char *name) = NULL;
 static int kallsyms_initialized = 0;
 
 int kallsyms_init(const char *symbol_name)
@@ -21,27 +22,35 @@ int kallsyms_init(const char *symbol_name)
 		return ret;
 	}
 
+	// Cache pointer to kallsyms_lookup_name function
+	kallsyms_lookup_name_func = (unsigned long (*)(const char *))kp.addr;
+
+	// Unregister immediately to reduce overhead, keeping pointer cached
+	unregister_kprobe(&kp);
+
+	if (!kallsyms_lookup_name_func) {
+		pr_err("kprobekallsyms: Failed to cache kallsyms_lookup_name function pointer\n");
+		return -EINVAL;
+	}
+
 	kallsyms_initialized = 1;
-	pr_info("kprobekallsyms: registered kprobe on %s at %px\n", symbol_name, kp.addr);
+	pr_info("kprobekallsyms: cached kallsyms_lookup_name function at %px\n", kp.addr);
+
 	return 0;
 }
 
 void kallsyms_exit(void)
 {
-	if (!kallsyms_initialized)
-		return;
-
-	unregister_kprobe(&kp);
+	kallsyms_lookup_name_func = NULL;
 	kallsyms_initialized = 0;
-	pr_info("kprobekallsyms: unregistered kprobe on %s\n", kp.symbol_name);
 }
 
 unsigned long ksym_lookup_name(const char *name)
 {
-	if (!kallsyms_initialized || !kp.addr)
+	if (!kallsyms_initialized || !kallsyms_lookup_name_func)
 		return 0;
 
-	return ((unsigned long (*)(const char *))kp.addr)(name);
+	return kallsyms_lookup_name_func(name);
 }
 
 unsigned long ksym_lookup_name_log(const char *name)
